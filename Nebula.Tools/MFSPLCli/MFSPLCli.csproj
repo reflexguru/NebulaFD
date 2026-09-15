@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>mfspL-cli</AssemblyName>
+    <RootNamespace>Nebula.Tools.MFSPLCli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Spectre.Console" Version="0.49.1" />
+    <ProjectReference Include="..\..\Nebula.Core\Nebula.Core.csproj" />
+    <ProjectReference Include="..\GameDumper\GameDumper.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\.resources\zlibwapi.dll" Link="zlibwapi.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

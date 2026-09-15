@@ -1,16 +1,420 @@
-![Nebula Logo](https://raw.githubusercontent.com/AITYunivers/NebulaFD/master/.resources/NebulaLogo.png)
-# 
-**README is a Work In Progress.**
+# NebulaFD · MFSPL tools —— Clickteam Fusion → Godot 迁移工具链
 
-[Discord](https://discord.gg/aY2WFGPBBB)
+> 本仓库是 [AITYunivers/NebulaFD](https://github.com/AITYunivers/NebulaFD) 的**扩展 fork**：
+> 在**不改动上游任何源码**的前提下，新增了一套「批量反编译 `.mfa` → 中间表示（IR）+ Godot 资源」的工具链，
+> 用来把 Clickteam Fusion 2.5 做的工程（Mario Forever 类游戏）整包导出成 Godot 4 可直接消费的数据与资源。
+>
+> English summary: [jump to English section](#english-summary)
 
-Just another Clickteam Fusion 2.5 decompiler made by [Yunivers](https://github.com/AITYunivers).
-|Table of Contents| Description |
-|--|--|
-| [Credits](https://github.com/AITYunivers/Nebula/tree/master#Credits)|A list of Nebula credits.|
+| 项 | 值 |
+|---|---|
+| 上游基线 | `AITYunivers/NebulaFD`，分支 `2024-nebula`，commit `e76702c`（2024-12-31） |
+| 改动性质 | **纯新增**（5 项 / 6 个文件：4 个 dumper + `MFSPLCli/{Program.cs,MFSPLCli.csproj}`）；对上游文件 `git diff` 为空 |
+| 运行平台 | 构建/运行需要 **.NET SDK 6.0+**；图像与精灵导出走 `System.Drawing` ⇒ **仅 Windows** |
+| 主要消费者 | Godot 4.7 工程 `mfspl-godot`（编辑器插件 `addons/tile_converter`、`addons/active_converter`） |
+| 新增部分许可 | **MIT**（仅覆盖新增的 5 个文件，见 [版权与许可](#8-版权与许可license)） |
 
-## Credits
-|User| Credit for..|
-|--|--|
-| [Yunivers](https://github.com/AITYunivers)| Creator of Nebula. |
-| [Kostya](https://github.com/1987kostya1)| Developer of the Image Bank.|
+---
+
+## 目录
+
+1. [相对上游的改动](#1-相对上游的改动)
+2. [构建](#2-构建)
+3. [命令行用法（mfspL-cli）](#3-命令行用法mfspL-cli)
+4. [导出产物说明](#4-导出产物说明)
+5. [Godot 侧怎么用](#5-godot-侧怎么用)
+6. [上游交互式 CLI（Nebula.CLI）](#6-上游交互式-clinebulacli)
+7. [已知限制](#7-已知限制)
+8. [版权与许可（License）](#8-版权与许可license)
+9. [English summary](#english-summary)
+
+---
+
+## 1. 相对上游的改动
+
+全部为**新增文件**，没有修改/删除上游任何文件（相对上游基线，代码侧只有 5 条未跟踪项；
+本 `README.md` 与 `LICENSE-ADDITIONS-MIT.md` 是随后补上的文档）：
+
+| # | 新增 | 作用 |
+|---|---|---|
+| 1 | `Nebula.Tools/GameDumper/MFSPLExporter.cs` | 核心导出器：把已解析的 MFA 导成 **IR**（`objects.json` / `events.json` / `images.json` / `sounds.json` / `tiles.json` / 精灵图集） |
+| 2 | `Nebula.Tools/GameDumper/GodotSpriteFramesExporter.cs` | IR 精灵 → Godot `SpriteFrames` **`.tres`** + `offset.json`（hotspot → `Sprite2D.offset`） |
+| 3 | `Nebula.Tools/GameDumper/GodotTileExporter.cs` | IR 瓦片 → Godot **`tileset.tres` + `tilemap.tscn` + `tilemap.json`**（编辑器打开即见，无脚本） |
+| 4 | `Nebula.Tools/GameDumper/AssetArchiver.cs` | IR 素材归档成「公共 / 独有」（`shared/`、`shared_sprites/`），中文可读文件名，幂等 |
+| 5 | `Nebula.Tools/MFSPLCli/`（`Program.cs` + `MFSPLCli.csproj`） | 新的**批量命令行入口** `mfspL-cli`（上游只有交互式菜单 CLI） |
+
+### 1.1 `MFSPLExporter.cs` —— IR 导出核心
+
+既是上游的 `INebulaTool`（会出现在交互式 CLI 的 Tools 菜单里，名字 `MFSPL Exporter`），
+也对外暴露静态方法供 `mfspL-cli` 批量调用：
+
+```csharp
+Export(mfa, outDir)                    // → objects.json + events.json
+ExportAssets(mfa, manifestDir, assetDir, imagePool?, soundPool?)   // → images.json + sounds.json + PNG/音频
+ExportSpritesheets(mfa, spritesDir, sheetIndex?)                   // → sprites/<对象>/ 图集 + sheet.json
+ExportTiles(mfa, outDir)               // → tiles.json
+WriteSpriteIndex(spritesDir)           // → sprites/index.json
+```
+
+产出内容：
+
+- **`objects.json`** — 对象类型定义 + 每帧实例清单。
+  - `app`: `name` / `build` / `width` / `height`
+  - `objectTypes`: `handle` → `{ handle, name, type, typeName, objectFlags, newObjectFlags, qualifiers, alterableValues{names,initial}, alterableStrings{names,initial}, value{initial,minimum,maximum}, movements[], animations[] }`
+    - `type`: `0=QuickBackdrop 1=Backdrop 2=Active 3=String 4=Question 5=Score 6=Lives 7=Counter 8=FormattedText 9=SubApplication ≥32=Extension`
+    - `animations[]`: `{ id, name, directions[]{ index, minSpeed, maxSpeed, repeat, repeatFrame, frames[] } }`
+  - `frames[]`: `{ name, handle, width, height, instances[]{ objectInfo, x, y, layer, instanceValue, parentType, parentHandle } }`
+    - 实例的 `x/y` 就是 CTF 的 **hot spot 坐标**（原始像素，1:1 可直接使用）
+    - `parentType != 0` = MFA 的**假实例**（Fake Instance / `CreateOnly`：对象被事件引用但没摆到场上，坐标恒为 0,0）。
+      Nebula 自己的帧预览（`Nebula.Core/Utilities/Utilities.cs`）同样会跳过它们，下游默认也跳过。
+- **`events.json`** — `globalEvents[]` + `frames[]{ name, events[] }` + `dedup[]`（同一事件按 SHA-256 前 16 hex 指纹跨帧去重，
+  记录它出现在哪些帧的哪些序号上）。事件只做**忠实转储**，不做 Godot 逻辑翻译。
+- **`images.json` / `sounds.json`** — 句柄 → 文件与元数据：
+  - 图片：`{ file(相对路径), width, height, hotspotX, hotspotY, actionPointX, actionPointY }`（hotspot/actionPoint 是 CTF 锚点）
+  - 声音：`{ file, name }`；扩展名按文件魔数判定（RIFF→wav / OggS→ogg / FORM→aiff / ID3、0xFFEx→mp3，其余 wav）
+- **`tiles.json`** — 每帧的 backdrop 实例**原始矩形**（不做任何切分/分类，那是 `GodotTileExporter` 的职责）：
+  `{ x, y, w, h, obstacle, image, fillType, color1, color2, isBackground, object, objectType, layer, order }`
+  - `isBackground` = `image == 0` 的全屏 backdrop（纯色/渐变/大图）**或**任一边 > 480px ⇒ 不切分
+- **素材去重** — 图片按 PNG 内容 SHA-256 前 16 hex 命名 `img_<hash16>.png`、声音同理 `snd_<hash16>.<ext>`；
+  跨关卡共用一个 `assets/`（CLI 传入共享池）。**同名不同内容**不会互相覆盖。
+- **精灵图集** — 每个 Active 对象的**每个动画方向**一张横排 PNG（帧顺序保持原样，从不重排）+ 同目录 `sheet.json`
+  （`frames[]{ handle, rect, hotspotX, hotspotY, actionPointX, actionPointY }`、`minSpeed/maxSpeed/repeat/repeatFrame`）。
+  对象目录名 = 对象名；同名的不同内容对象加 `__<hash8>` 后缀；`sprites/index.json` 汇总「对象名 → 目录名」。
+
+### 1.2 `GodotSpriteFramesExporter.cs` —— IR → Godot `SpriteFrames`
+
+- 每个**动画方向** → Godot 的一个动画：多方向时命名 `anim<动画号>_d<方向号>`，只有一个方向时命名 `default`。
+- 帧用 `AtlasTexture`（region = 该帧在图集里的矩形）切图；**初始帧的贴图会被复制**到 Godot 目录。
+- `speed` 固定 **50**：CTF 的 `minSpeed/maxSpeed` 是"速度达到多少才播/播多快"的阈值，**不是 FPS**，
+  所以取 CTF 运行时帧率（50FPS）作为基准速度，同时把 `minSpeed/maxSpeed` 写进 `offset.json` 供引擎运行时还原。
+- `loop = (repeat == 0)`。
+- **左右镜像去重**：同一动画里若 `d16`（左）逐帧与 `d0`（右）水平镜像相似度 ≥ 0.90（同尺寸贪心匹配、逐像素比较、
+  完全透明的像素忽略 RGB），则**丢弃 d16**，`d0` 标记 `mirrored = true`，由引擎运行时 `flip_h`。
+- **`offset.json`** 记录 CTF 锚点 → Godot 精灵偏移（`centered` 模式：`offsetX = w/2 - hotspotX`、`offsetY = h/2 - hotspotY`）
+  以及 `mirrored` / `minSpeed` / `maxSpeed`。
+- 生成前会**清空目标对象目录**：被镜像去重丢掉的方向不会留下上一轮的残骸（含 `.import`）。
+
+### 1.3 `GodotTileExporter.cs` —— IR → Godot 瓦片
+
+把 `tiles.json` 的每个 backdrop 实例按三条规则分流（单元格尺寸固定 **32**）：
+
+1. `isBackground` ⇒ **永不切分**，只写进 `tilemap.json` 的 `backgrounds`，由关卡作者手动摆；
+2. 恰好 32×32 且 x/y 都是 32 的倍数 ⇒ 一个 **TileMap 单元格**；
+3. 其余 ⇒ 按 32 网格切成子块：能落在对齐格子的进 TileMap，其余（非对齐、或贴图超出图集）写成 **StaticBody2D 片段**
+   （带 `Sprite2D` 的 region 贴图 + `RectangleShape2D` 碰撞，obstacle 才带碰撞）。
+
+细节：
+
+- 图集坐标按 **motif（重复采样）** 计算：子块在对象矩形内的偏移 `(dx,dy)` 取贴图 `(dx mod imgW, dy mod imgH)`；
+  只有"32 对齐 + 贴图宽高都是 32 的整数倍 + 区域在贴图内"才允许成为 TileMap 单元格，
+  否则退化成 StaticBody2D（避免 Godot 的 `Image width 0` 报错）。
+- 同一格被多个图块抢占时：**源顺序靠前者占格**，后来者写成 StaticBody2D 并在 `tilemap.json` 里记录 `conflictWith`。
+- 产物（每个关卡一个目录）：
+  - **`tileset.tres`** — 每张图一个 `TileSetAtlasSource`（`texture_region_size = 32×32`），只注册地图真正用到的 atlas 格；
+    obstacle 格带整格碰撞多边形 `(-16,-16)-(16,16)`。
+  - **`tilemap.tscn`** — 根 `Node2D` + `TileMapLayer`（`tile_map_data` 已烘焙）+ 所有 StaticBody2D 片段**烘焙成场景节点**：
+    **不跑任何脚本**，编辑器里打开就能看到完整网格与碎片。
+  - **`tilemap.json`** — 结构化数据（`backgrounds` / `cells` / `staticBodies`），供后续脚本消费。
+  - **`assets/`** — 拷贝 tileset / 背景引用到的 PNG（已存在则不覆盖）。
+
+### 1.4 `AssetArchiver.cs` —— 素材归档（公共 / 独有）
+
+按 IR 的引用关系，把 IR 里的贴图素材再整理一份**人类可读**的副本，方便导入 Godot 时判断"哪些是全局资源、哪些是这关独有的"：
+
+- 图片：被 **≥2 关**引用 → `shared/`；只被 1 关引用 → 该关目录的 `assets/`；
+- 精灵：同理 → `shared_sprites/` 或该关的 `sprites/`；
+- 文件名 = `<对象名|背景_WxH>__<hash8>.png`（hash8 是原文件名 `img_<hash16>` 的前 8 位，可回源；同名冲突自动补全 hash16，文件名限长 120）；
+- **只做复制**：原 `assets/` 与 `sprites/` 原样保留，下游引用零影响；重复运行幂等（覆盖写）。
+
+### 1.5 `MFSPLCli/` —— 批量命令行
+
+- 单独的 exe 项目（`AssemblyName = mfspL-cli`），**没有加进 `Nebula.sln`**（保持上游 sln 原样），
+  直接 `dotnet build Nebula.Tools/MFSPLCli/MFSPLCli.csproj` 或 `dotnet run --project` 即可。
+- 支持传**单个 .mfa** 或**一个目录**（递归找 `*.mfa`）；跨关卡共享 `assets/`（按内容哈希去重）、
+  共享 `sprites/`（按对象内容指纹去重）；每关处理完做一次 GC / 大对象堆压缩（MFA 解析很吃内存）；
+  并静默 Nebula 的 Spectre 控制台日志（"Unknown Chunk" 之类刷屏），只保留自己的进度输出。
+
+> **为什么全部做成"新增文件"？** 这样上游后续提交可以随时 rebase / 重新拉取，
+> 冲突面为零——新增部分只依赖上游的公开类型（`MFAPackageData`、`FrameInstances`、`ImageBank`、`INebulaTool` 等）。
+
+---
+
+## 2. 构建
+
+```powershell
+cd NebulaFD
+dotnet build Nebula.Tools/MFSPLCli/MFSPLCli.csproj -c Release
+```
+
+- 需要 **.NET SDK 6.0 或更高**（`TargetFramework = net6.0`；实测 6.0.428 / 8.0 / 9.0 的 SDK 都能构建）。
+- 实测结果：`dotnet build Nebula.Tools/MFSPLCli/MFSPLCli.csproj -c Debug` → **0 error**（336 warning，
+  全部是上游自带的 nullable / CA1416 噪声）。
+- 产物：`Nebula.Tools/MFSPLCli/bin/<Config>/net6.0/mfspL-cli.dll`
+- 注意上游的 `OutputPath` 设定：`Nebula.Core.csproj` → `..\build\`，`GameDumper.csproj` → `..\..\build\Tools\`，
+  所以构建会顺带把 `Nebula.Core.dll`、`GameDumper.dll` 写进仓库根的 `build/`（上游原有行为，该目录未被 git 跟踪）。
+- 只想跑上游的交互式 CLI：`dotnet build Nebula.sln`。
+
+---
+
+## 3. 命令行用法（`mfspL-cli`）
+
+```
+Usage: mfspL-cli <mfa-file-or-dir> [-o <output-dir>]
+                  [--godot <dir> [--godot-res <resPath>]]
+                  [--tiles-godot <dir> [--tiles-godot-res <resPath>]]
+       mfspL-cli -o <output-dir> [--godot-only | --tiles-only | --archive]
+```
+
+| 参数 | 说明 |
+|---|---|
+| `<mfa-file-or-dir>` | 单个 `.mfa` 或一个目录（递归查找 `*.mfa`，按路径排序处理） |
+| `-o, --out <dir>` | IR 输出根目录。默认 `./mfspl_ir`（相对**当前工作目录**）。每个 mfa 输出到 `<out>/<mfa 文件名>/` |
+| `--godot <dir>` | 额外产出 Godot `SpriteFrames`（`.tres`）到该目录（**绝对路径**），每个对象一个子目录 |
+| `--godot-res <p>` | `.tres` 里 `res://` 前缀（默认 `res://mfspl/sprite/ctf`），要指向 Godot 工程内的相对位置 |
+| `--godot-only` | **跳过 MFA 解析**，用已有的 `<out>/sprites` 重发 SpriteFrames（改前缀 / 改镜像阈值后重跑很快） |
+| `--tiles-godot <dir>` | 额外产出 Godot 瓦片数据（`tilemap.json` / `tileset.tres` / `tilemap.tscn`）到该目录（**绝对路径**） |
+| `--tiles-godot-res <p>` | 瓦片资源的 `res://` 前缀（默认 `res://mfspl/stage_ctf`） |
+| `--tiles-only` | **跳过 MFA 解析**，用已有的 `<out>/<关卡>/tiles.json` 重发瓦片数据 |
+| `--archive` | 只做素材归档（见 1.4），对已有 `-o` 目录运行，幂等 |
+| `-h, --help` | 打印用法 |
+
+**关于 `config.json`**：Nebula 从**当前工作目录**读取解析开关 `config.json`（`Nebula.Core/Parameters.cs`），
+文件不存在时会自动写一份默认的。推荐把 `config.json` 放在 CTF 工程目录里，并在**该目录下**执行命令。
+
+**退出码**：`0` 全部成功；`3` 有 mfa 失败（或瓦片有失败）；`2` 参数/路径问题；`1` 没给输入。
+
+### 3.1 典型用法
+
+**① 整包导出（最常用）**
+
+```powershell
+# 在放有 config.json 的 CTF 工程目录下执行
+cd "D:\...\MF Story：Pokata Leaves\project\mfspl-ctf"
+
+dotnet "D:\...\NebulaFD\Nebula.Tools\MFSPLCli\bin\Release\net6.0\mfspL-cli.dll" `
+    "D:\...\MF Story：Pokata Leaves\project\mfspl-ctf" `
+    -o "D:\...\MF Story：Pokata Leaves\project\mfspl_ir" `
+    --godot     "D:\...\mfspl-godot\project\mfspl\sprite\ctf" `
+    --godot-res "res://mfspl/sprite/ctf" `
+    --tiles-godot "D:\...\mfspl-godot\project\mfspl\stage_ctf" `
+    --tiles-godot-res "res://mfspl/stage_ctf"
+```
+
+实测输出（单个 3.4MB 的 mfa）：
+
+```
+Found 1 .mfa file(s). Output → ...\mfspl_ir
+[1/1] Story-1_LTEv1.3.3.mfa OK — frames=7, objects=106, images=140 (+3 dup), sounds=6 (+0 dup),
+      sheets=29 (+0 dup), tiles=1612
+Done. OK=1, FAILED=0. Output → ...\mfspl_ir
+Assets: 140 unique images, 6 unique sounds → ...\mfspl_ir\assets
+Spritesheets: 29 sheets (+0 dup) → ...\mfspl_ir\sprites
+Tiles: 1612 backdrop rects → per-level tiles.json
+Godot SpriteFrames: 29 objects, 29 animations → ...\project\mfspl\sprite\ctf
+  tile→ Story-1_LTEv1.3.3: 7 frames, 1765 cells, 5 statics, 0 conflicts
+Godot tiles: 1 levels OK (0 failed) → ...\project\mfspl\stage_ctf [cells=1765, statics=5, backgrounds=10, conflicts=0]
+```
+
+耗时约 **2.6 秒 / 3.4MB mfa**（含 PNG 解码、图集拼接、SpriteFrames 与瓦片生成）。
+
+**② 只重发 SpriteFrames**（改镜像阈值、改 res:// 前缀后无需重新解析 MFA，秒级）
+
+```powershell
+dotnet ...\mfspL-cli.dll -o "...\mfspl_ir" `
+    --godot "...\project\mfspl\sprite\ctf" --godot-res "res://mfspl/sprite/ctf" --godot-only
+```
+
+**③ 只重发瓦片数据**
+
+```powershell
+dotnet ...\mfspL-cli.dll -o "...\mfspl_ir" `
+    --tiles-godot "...\project\mfspl\stage_ctf" --tiles-only
+```
+
+**④ 归档公共/独有素材**
+
+```powershell
+dotnet ...\mfspL-cli.dll -o "...\mfspl_ir" --archive
+# → shared/ ≈ ...\mfspl_ir\shared 、shared_sprites/ ≈ ...\mfspl_ir\shared_sprites
+```
+
+---
+
+## 4. 导出产物说明
+
+```
+<out>/                                   IR 根目录（-o）
+├─ assets/                               ★跨关卡共享：按内容去重的图片/音频
+│   ├─ img_<hash16>.png
+│   └─ snd_<hash16>.wav|ogg|mp3|aiff
+├─ sprites/                              ★跨关卡共享：对象动画图集
+│   ├─ index.json                        对象名 → [目录名...]（同名不同内容会有 __<hash8> 变体）
+│   └─ <对象名>/
+│       ├─ a<动画号>_d<方向号>.png        该方向所有帧横排（顺序=原样）
+│       └─ sheet.json                    每帧矩形 + hotspot + actionPoint + minSpeed/maxSpeed/repeat
+├─ <关卡名>/                              每个 .mfa 一个目录
+│   ├─ objects.json                      对象类型 + 每帧实例（x/y/layer/parentType…）
+│   ├─ events.json                       全局事件 + 每帧事件 + 跨帧指纹去重表
+│   ├─ images.json / sounds.json         句柄 → 文件 + 元数据
+│   └─ tiles.json                        backdrop 实例原始矩形
+├─ shared/  shared_sprites/              --archive 产出：被 ≥2 关引用的素材
+└─ <关卡名>/assets/  <关卡名>/sprites/     --archive 产出：该关独有的素材
+
+<godot-sprite-dir>/                       --godot 产出（可直接放进 Godot 工程）
+└─ <对象名>/
+    ├─ <对象名>.tres                      SpriteFrames（AtlasTexture 切帧；speed=50）
+    ├─ a<动画号>_d<方向号>.png             被保留的方向（镜像方向已丢弃）
+    └─ offset.json                        hotspot→Sprite2D.offset、mirrored、minSpeed/maxSpeed
+
+<godot-tile-dir>/                         --tiles-godot 产出（可直接放进 Godot 工程）
+└─ <关卡名>/
+    ├─ tileset.tres                       TileSet（每张图一个 AtlasSource，obstacle 带碰撞）
+    ├─ tilemap.tscn                       根 Node2D + TileMapLayer（数据烘焙）+ StaticBody2D 片段
+    ├─ tilemap.json                       结构化：backgrounds / cells / staticBodies
+    └─ assets/                            被引用的 PNG
+```
+
+---
+
+## 5. Godot 侧怎么用
+
+1. **精灵**：把 `--godot` 指到 Godot 工程内（例如 `.../project/mfspl/sprite/ctf`），
+   产出的 `<对象>.tres` 可直接拖给 `AnimatedSprite2D`；`offset.json` 的 `offsetX/offsetY` 对应
+   Godot 的 `Sprite2D.offset`（`centered = true` 时的热点折算），`mirrored` 的对象在运行时按朝向 `flip_h`。
+2. **瓦片**：把 `--tiles-godot` 指到 `.../project/mfspl/stage_ctf`，直接打开 `<关卡>/tilemap.tscn`，
+   编辑器里就能看到整关网格（含非对齐碎片的 StaticBody2D），无需运行任何脚本。
+3. **编辑器插件**（在 Godot 工程 `mfspl-godot` 内）：
+   - `addons/tile_converter`：读 **TileExporter v1.0 文本**（`mfspl_tiledata_*.txt`）把瓦片实例化成场景
+     —— 注意这种文本**不是本仓库产出的**（见下节"已知限制"）。
+   - `addons/active_converter`：两个入口
+     - `1a. Open TXT file (tiles)`：同上，读 tile 文本；
+     - `1b. Open objects.json (actives)`：**直接读本仓库导出的 IR**，把 MFA 里的 **Active 实例**按位置铺成场景：
+       映射键 = **对象名**（如 `锤子龟（火球，狙，飞行）` → `flying_fire_bro.tscn`），
+       落点 = **实例 x/y**（CTF hot spot）+ 每条映射各自的 offset，
+       沿用 16px 模糊去重，并且**默认跳过假实例**（`parentType != 0`，可在 dock 上勾选包含）。
+
+---
+
+## 6. 上游交互式 CLI（Nebula.CLI）
+
+上游的 `Nebula.CLI` 是**菜单式**的，本仓库完全保留：
+
+```powershell
+dotnet run --project Nebula.CLI -c Release
+# 1) 输入文件路径（mfa/ccn/exe/apk/…）
+# 2) 选择 file reader（或 Auto-Detect）
+# 3) 选择要执行的 Tools（多选，空格勾选 / 回车执行）
+```
+
+`GameDumper.dll` 会被加载，其中 `MFSPLExporter` 作为 `INebulaTool` 出现在菜单里（名字 **MFSPL Exporter**），
+执行后导出到工作目录的 `Dumps/<AppName>/mfspl/`（不含 Godot 转换、不跨关去重 —— 批量场景请用 `mfspL-cli`）。
+
+---
+
+## 7. 已知限制
+
+- 只处理 **`.mfa`**（走 `MFAFileReader`）；CCN/EXE/APK 等上游能读，但本导出器明确只吃 MFA。
+- **不产出 `TileExporter v1.0` 文本**（`mfspl_tiledata_*.txt` 是另一套早期外部工具的输出）：
+  本仓库的瓦片走 `tiles.json` → `tilemap.tscn` / `tilemap.json`。若需要与 `tile_converter` 的旧文本流程对接，
+  需要另写一个 exporter。
+- `events.json` **只做转储**，不翻译成 Godot 逻辑；参数文本依赖 Nebula 的表达式反编译，个别 ACE 名称可能为空。
+- 背景层（`isBackground`）不自动切分，需人工摆放。
+- 假实例（`parentType != 0`）在 IR 里保留，但下游默认跳过。
+- 图像/精灵导出依赖 `System.Drawing` ⇒ **仅 Windows**（构建时的 CA1416 警告即来源于此）；纯解析跨平台。
+- 镜像去重阈值（0.90）与 `SpriteFrames.speed`（50）是写死的常量，需要时改这两处即可。
+
+---
+
+## 8. 版权与许可（License）
+
+**上游**：本仓库是 [AITYunivers/NebulaFD](https://github.com/AITYunivers/NebulaFD) 的 fork。上游**没有 LICENSE 文件**
+（GitHub API `license: null`，README 也没有授权条款）⇒ 默认**保留所有权利**。
+因此：**本仓库没有、也无法对上游代码再许可**；上游代码（`Nebula.Core/`、`Nebula.CLI/`、`Nebula.sln`、
+`.resources/`、以及 `Nebula.Tools/GameDumper/` 下的其余上游文件）的版权归 **Yunivers (AITYunivers)** 及其贡献者所有。
+
+**本仓库新增部分**：下列 5 项（共 6 个文件）由本 fork 编写（作者 **GreenSweet233**），以 **MIT License** 发布，
+完整条款见 [`LICENSE-ADDITIONS-MIT.md`](LICENSE-ADDITIONS-MIT.md)：
+
+1. `Nebula.Tools/GameDumper/MFSPLExporter.cs`
+2. `Nebula.Tools/GameDumper/GodotSpriteFramesExporter.cs`
+3. `Nebula.Tools/GameDumper/GodotTileExporter.cs`
+4. `Nebula.Tools/GameDumper/AssetArchiver.cs`
+5. `Nebula.Tools/MFSPLCli/`（`Program.cs`、`MFSPLCli.csproj`）
+
+**实践建议**
+
+- 只想用这套导出工具：把上面 5 个文件放到你自己的 NebulaFD 检出里即可，MIT 条款只覆盖这 5 个文件；
+- 想整体复制/再发布**本仓库**（含上游代码）：请先向上游作者取得授权（Discord / GitHub Issues），
+  在拿到授权前不要把整个仓库声明为 MIT；
+- 想以其他许可发布新增部分（Apache-2.0 / MPL-2.0 等）也可以——替换 `LICENSE-ADDITIONS-MIT.md` 即可。
+
+**第三方依赖**（通过 NuGet 引入，不随源码分发）：
+
+| 包 | 版本 | 用途 |
+|---|---|---|
+| ILGPU | 1.5.1 | GPU 图像处理（上游） |
+| Joveler.Compression.ZLib | 5.0.0 | zlib 解压（上游） |
+| K4os.Compression.LZ4 | 1.3.8 | LZ4 解压（上游） |
+| Newtonsoft.Json | 13.0.3 | 配置/JSON（上游） |
+| Ressy | 1.0.3 | 资源读取（上游） |
+| Spectre.Console | 0.49.1 | 控制台输出（上游 + 新增工具） |
+| System.Drawing.Common | 8.0.4 | PNG 编解码（上游 + 新增工具） |
+
+仓库内 `.resources/zlibwapi.dll` 为 **zlib 许可**（zlib/libpng License）。分发二进制时请一并保留这些许可声明。
+
+**上游 README（原文保留）**
+
+> Just another Clickteam Fusion 2.5 decompiler made by [Yunivers](https://github.com/AITYunivers).
+> Credits: [Yunivers](https://github.com/AITYunivers)（Creator of Nebula）、
+> [Kostya](https://github.com/1987kostya1)（Developer of the Image Bank）.
+> Nebula is currently in the middle of a rewrite! Please do not open issues about temporarily removed features.
+
+---
+
+## English summary
+
+**What this is.** A fork of [AITYunivers/NebulaFD](https://github.com/AITYunivers/NebulaFD) (Clickteam Fusion 2.5 decompiler)
+that **adds** — without touching a single upstream file — a toolchain to batch-export `.mfa` projects into an
+intermediate representation (IR) plus ready-to-use **Godot 4** resources. Baseline: upstream branch `2024-nebula`,
+commit `e76702c`.
+
+**What was added (5 new files/dirs).**
+
+| File | What it does |
+|---|---|
+| `Nebula.Tools/GameDumper/MFSPLExporter.cs` | Exports the parsed MFA into `objects.json` (object types + per-frame instances with CTF `x/y/layer`), `events.json` (with cross-frame fingerprint dedup), `images.json` / `sounds.json` (handle → file, incl. hotspot/action point), `tiles.json` (raw backdrop rects), and per-direction sprite sheets (`sprites/<object>/{sheet.json,aX_dY.png}`) |
+| `Nebula.Tools/GameDumper/GodotSpriteFramesExporter.cs` | IR → Godot `SpriteFrames` `.tres` (one animation per CTF direction, `AtlasTexture` frames, `speed = 50`) + `offset.json` (hotspot → `Sprite2D.offset`, mirrored flag, min/max speed). Left/right mirrored directions (≥0.90 similarity) are dropped and intended to be flipped at runtime |
+| `Nebula.Tools/GameDumper/GodotTileExporter.cs` | IR → `tileset.tres` + `tilemap.tscn` (baked `tile_map_data` + StaticBody2D fragments; opens instantly in the editor, no scripts) + `tilemap.json`. 32×32 grid, motif-based atlas sampling, backgrounds left un-split |
+| `Nebula.Tools/GameDumper/AssetArchiver.cs` | Archives IR assets into shared vs per-level copies (`shared/`, `shared_sprites/`), human-readable `name__hash8.png`, copy-only and idempotent |
+| `Nebula.Tools/MFSPLCli/` | New **batch CLI** `mfspL-cli` (the upstream CLI is menu-driven only) |
+
+**Build.**
+
+```bash
+dotnet build Nebula.Tools/MFSPLCli/MFSPLCli.csproj -c Release
+# → Nebula.Tools/MFSPLCli/bin/Release/net6.0/mfspL-cli.dll   (requires .NET SDK 6.0+; image export is Windows-only)
+```
+
+**Run.**
+
+```bash
+cd <dir containing config.json>            # Nebula reads config.json from the current working directory
+dotnet mfspL-cli.dll <mfa-file-or-dir> -o <ir-out> \
+    --godot <godot-dir> --godot-res res://mfspl/sprite/ctf \
+    --tiles-godot <godot-level-dir> --tiles-godot-res res://mfspl/stage_ctf
+# Extra modes: --godot-only | --tiles-only (re-emit from existing IR, seconds) | --archive (shared/per-level asset copies)
+```
+
+See section [3](#3-命令行用法mfspL-cli) for the full option table, examples and real console output (~2.6 s for a 3.4 MB MFA),
+and section [4](#4-导出产物说明) for the exact output layout.
+
+**Godot side.** `--godot` emits folders of `<Object>/<Object>.tres` you can assign to `AnimatedSprite2D`;
+`--tiles-godot` emits `<Level>/tilemap.tscn` you can open straight away. Inside the `mfspl-godot` project the
+`addons/active_converter` editor plugin reads the IR's `objects.json` (button *"1b. Open objects.json (actives)"*) and
+instantiates a Godot scene per MFA **Active object**, mapping by **object name** and placing it at the CTF
+instance position (`x/y`, i.e. the hotspot) with per-mapping offsets, a 16 px duplicate guard and fake-instance filtering.
+
+**License.** Upstream NebulaFD ships **no license** (all rights reserved), so this fork does **not** and **cannot**
+re-license the upstream code. The **five newly added items (6 files)** listed above are released under the **MIT License**
+by their author (see [`LICENSE-ADDITIONS-MIT.md`](LICENSE-ADDITIONS-MIT.md)); everything else keeps its upstream copyright.
+If you want to redistribute the repository as a whole (upstream code included), ask the upstream author for permission first.
