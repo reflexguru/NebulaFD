@@ -233,6 +233,7 @@ namespace Nebula.Tools.GameDumper
                     int w = 0, h = 0;
                     int fillType = 3; // 1=Solid, 2=Gradient, 3=Motif(pattern)
                     int color1 = 0, color2 = 0;
+                    bool verticalGradient = true;
                     bool isBackground = false;
 
                     switch (oi.Properties)
@@ -243,6 +244,7 @@ namespace Nebula.Tools.GameDumper
                             h = qb.Height;
                             image = qb.Shape.Image;
                             fillType = qb.Shape.FillType;
+                            verticalGradient = qb.Shape.VerticalGradient;
                             if (fillType is 1 or 2)
                             {
                                 color1 = qb.Shape.Color1.ToArgb();
@@ -295,6 +297,7 @@ namespace Nebula.Tools.GameDumper
                         ["fillType"] = fillType,
                         ["color1"] = color1,
                         ["color2"] = color2,
+                        ["verticalGradient"] = verticalGradient,
                         ["isBackground"] = isBackground,
                         ["object"] = oi.Name,
                         ["objectType"] = oi.Header.Type,
@@ -322,6 +325,72 @@ namespace Nebula.Tools.GameDumper
             }, JsonOptions));
 
             return new TileExportResult { Frames = mfa.Frames.Count, Tiles = tileCount };
+        }
+
+        // ---------------- layers (scroll coefficients) ----------------
+
+        /// <summary>
+        /// Exports every frame's layer list: layer name, the CTF scroll coefficients
+        /// (XCoefficient / YCoefficient = how much a layer moves relative to the camera) and the
+        /// layer flags (wrap horizontally / vertically, hidden at start, ...). This is the data the
+        /// Godot side needs to rebuild the CTF parallax background stack: each CTF layer maps to one
+        /// parallax layer whose scroll scale = (XCoefficient, YCoefficient).
+        /// Output: layers.json (one per level).
+        /// </summary>
+        public static LayerExportResult ExportLayers(MFAPackageData mfa, string outputDir)
+        {
+            Directory.CreateDirectory(outputDir);
+            int layerCount = 0;
+            var framesDoc = new List<object?>();
+
+            foreach (var frm in mfa.Frames)
+            {
+                var layers = new List<object?>();
+                for (int i = 0; i < frm.FrameLayers.Layers.Length; i++)
+                {
+                    var layer = frm.FrameLayers.Layers[i];
+                    var flags = layer.MFALayerFlags;
+                    layers.Add(new Dictionary<string, object?>
+                    {
+                        ["index"] = i,
+                        ["name"] = layer.Name,
+                        ["xCoefficient"] = layer.XCoefficient,
+                        ["yCoefficient"] = layer.YCoefficient,
+                        ["backdropCount"] = layer.BackdropCount,
+                        ["backdropIndex"] = layer.BackdropIndex,
+                        ["flags"] = new Dictionary<string, object?>
+                        {
+                            ["visible"] = flags["Visible"],
+                            ["locked"] = flags["Locked"],
+                            ["hiddenAtStart"] = flags["HiddenAtStart"],
+                            ["dontSaveBackground"] = flags["DontSaveBackground"],
+                            ["wrapHorizontally"] = flags["WrapHorizontally"],
+                            ["wrapVertically"] = flags["WrapVertically"],
+                            ["prevEffect"] = flags["PrevEffect"],
+                            ["raw"] = flags.Value,
+                        },
+                        ["layerFlagsRaw"] = layer.LayerFlags.Value,
+                    });
+                    layerCount++;
+                }
+
+                framesDoc.Add(new Dictionary<string, object?>
+                {
+                    ["name"] = frm.FrameName,
+                    ["handle"] = frm.Handle,
+                    ["width"] = frm.FrameHeader.Width,
+                    ["height"] = frm.FrameHeader.Height,
+                    ["layers"] = layers,
+                });
+            }
+
+            File.WriteAllText(Path.Combine(outputDir, "layers.json"), JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["app"] = mfa.AppName,
+                ["frames"] = framesDoc,
+            }, JsonOptions));
+
+            return new LayerExportResult { Frames = mfa.Frames.Count, Layers = layerCount };
         }
 
         // ---------------- spritesheets ----------------
@@ -907,5 +976,12 @@ namespace Nebula.Tools.GameDumper
     {
         public int Frames;
         public int Tiles;
+    }
+
+    /// <summary>Summary counts returned by <see cref="MFSPLExporter.ExportLayers"/>.</summary>
+    public class LayerExportResult
+    {
+        public int Frames;
+        public int Layers;
     }
 }

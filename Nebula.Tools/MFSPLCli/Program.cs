@@ -16,6 +16,7 @@ string? godotTilesAbs = null;
 string godotTilesRes = "res://mfspl/stage_ctf";
 bool tilesOnly = false;
 bool archive = false;
+bool layersOnly = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -46,6 +47,9 @@ for (int i = 0; i < args.Length; i++)
         case "--archive":
             archive = true;
             break;
+        case "--layers-only":
+            layersOnly = true;
+            break;
         case "-h":
         case "--help":
             Console.WriteLine("Usage: mfspL-cli <mfa-file-or-dir> [-o <output-dir>] [--godot <dir> [--godot-res <resPath>]] [--tiles-godot <dir> [--tiles-godot-res <resPath>]]");
@@ -59,6 +63,7 @@ for (int i = 0; i < args.Length; i++)
             Console.WriteLine("  --tiles-godot-res <p>  res:// prefix for tile assets (default res://mfspl/stage_ctf).");
             Console.WriteLine("  --tiles-only           skip MFA parsing; re-emit Godot tile data from existing -o tiles.json.");
             Console.WriteLine("  --archive              archive shared vs per-level assets (images + sprites) into -o; copies only, idempotent.");
+    Console.WriteLine("  --layers-only          only emit layers.json (layer names + scroll coefficients) from the MFA sources.");
             return 0;
         default:
             input ??= args[i];
@@ -150,6 +155,7 @@ string spritesDir = Path.Combine(outputRoot, "sprites");
 var sheetIndex = new Dictionary<string, string>();
 int totalSheets = 0, totalSkipped = 0;
 int totalTiles = 0;
+int totalLayers = 0;
 
 int ok = 0, fail = 0;
 for (int i = 0; i < files.Count; i++)
@@ -165,6 +171,15 @@ for (int i = 0; i < files.Count; i++)
 
         var mfa = (MFAPackageData)NebulaCore.PackageData;
         string outDir = Path.Combine(outputRoot, Path.GetFileNameWithoutExtension(file));
+
+        if (layersOnly)
+        {
+            var layerOnly = MFSPLExporter.ExportLayers(mfa, outDir);
+            Console.WriteLine($"[{i + 1}/{files.Count}] {name} OK — frames={layerOnly.Frames}, layers={layerOnly.Layers}");
+            ok++;
+            continue;
+        }
+
         var result = MFSPLExporter.Export(mfa, outDir);
         var assets = MFSPLExporter.ExportAssets(mfa, outDir, assetDir, imagePool, soundPool);
         var sprites = MFSPLExporter.ExportSpritesheets(mfa, spritesDir, sheetIndex);
@@ -172,8 +187,10 @@ for (int i = 0; i < files.Count; i++)
         totalSkipped += sprites.Skipped;
         var tiles = MFSPLExporter.ExportTiles(mfa, outDir);
         totalTiles += tiles.Tiles;
+        var layers = MFSPLExporter.ExportLayers(mfa, outDir);
+        totalLayers += layers.Layers;
 
-        Console.WriteLine($"[{i + 1}/{files.Count}] {name} OK — frames={result.Frames}, objects={result.Objects}, images={assets.Images} (+{assets.ImageDuplicates} dup), sounds={assets.Sounds} (+{assets.SoundDuplicates} dup), sheets={sprites.Sheets} (+{sprites.Skipped} dup), tiles={tiles.Tiles}");
+        Console.WriteLine($"[{i + 1}/{files.Count}] {name} OK — frames={result.Frames}, objects={result.Objects}, images={assets.Images} (+{assets.ImageDuplicates} dup), sounds={assets.Sounds} (+{assets.SoundDuplicates} dup), sheets={sprites.Sheets} (+{sprites.Skipped} dup), tiles={tiles.Tiles}, layers={layers.Layers}");
         ok++;
     }
     catch (Exception ex)
@@ -189,12 +206,19 @@ for (int i = 0; i < files.Count; i++)
     }
 }
 
+if (layersOnly)
+{
+    Console.WriteLine($"Done (layers only). OK={ok}, FAILED={fail}. Layers → per-level layers.json");
+    return fail == 0 ? 0 : 3;
+}
+
 MFSPLExporter.WriteSpriteIndex(spritesDir);
 
 Console.WriteLine($"Done. OK={ok}, FAILED={fail}. Output → {outputRoot}");
 Console.WriteLine($"Assets: {imagePool.Count} unique images, {soundPool.Count} unique sounds → {assetDir}");
 Console.WriteLine($"Spritesheets: {totalSheets} sheets (+{totalSkipped} dup) → {spritesDir}");
 Console.WriteLine($"Tiles: {totalTiles} backdrop rects → per-level tiles.json");
+Console.WriteLine($"Layers: {totalLayers} frame layers (scroll coefficients) → per-level layers.json");
 
 if (godotAbs != null)
 {
