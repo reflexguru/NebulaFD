@@ -171,7 +171,7 @@ namespace Nebula.Core.Data.PackageReaders
                     newOI.Header.InkEffectParam = oI.InkEffectParameter;
                     newOI.Name = oI.Name;
 
-                    if (newOI.Header.InkEffect != 1 && oI.ObjectEffects != null)
+                    if (oI.ObjectEffects != null)
                     {
                         newOI.Header.RGBCoeff = oI.ObjectEffects.RGBCoeff;
                         newOI.Header.BlendCoeff = oI.ObjectEffects.BlendCoeff;
@@ -334,6 +334,11 @@ namespace Nebula.Core.Data.PackageReaders
                             break;
                     }
 
+                    // Frame-local copy always wins for this frame. Names/handles are not unique
+                    // across the MFA: "Backdrop 26" on LEVEL 2 is not LEVEL 1's Backdrop 26.
+                    frame.FrameObjectItems[newOI.Header.Handle] = newOI;
+                    // App-global map is first-write-wins and only a fallback for events / CCN-style
+                    // lookups that have no frame context.
                     if (!frameItems.ContainsKey(newOI.Header.Handle))
                         frameItems.Add(newOI.Header.Handle, newOI);
                 }

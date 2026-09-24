@@ -1,4 +1,7 @@
-﻿using Nebula.Core.Memory;
+﻿using Nebula.Core.Data.Chunks.FrameChunks;
+using Nebula.Core.Data.Chunks.FrameChunks.Events;
+using Nebula.Core.Data.Chunks.ObjectChunks;
+using Nebula.Core.Memory;
 
 namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 {
@@ -71,13 +74,33 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
             writer.WriteUShort(ObjectInfo);
         }
 
+        string ResolveCreateObjectName(ushort objectInfo)
+        {
+            FrameEvents? fe = Parent?.FrameEvents;
+            Frame? frame = fe?.Parent;
+            if (frame?.FrameObjectItems.TryGetValue(objectInfo, out ObjectInfo? localOi) == true && localOi != null)
+                return localOi.Name;
+            if (fe != null && fe.EventObjects.TryGetValue(objectInfo, out EventObject? eo) && eo.ObjectType == 1)
+            {
+                int handle = (int)eo.ItemHandle;
+                if (frame?.FrameObjectItems.TryGetValue(handle, out localOi) == true && localOi != null)
+                    return localOi.Name;
+                if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out localOi))
+                    return localOi.Name;
+            }
+            if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(objectInfo, out localOi))
+                return localOi.Name;
+            return "Unknown Object";
+        }
+
         public override string ToString()
         {
-            string output = $"{NebulaCore.PackageData.FrameItems.Items[ObjectInfo].Name} at ({X},{Y})";
+            string output = $"{ResolveCreateObjectName(ObjectInfo)} at ({X},{Y})";
             if (ObjectInfoParent != ushort.MaxValue)
             {
-                if (NebulaCore.PackageData.FrameItems.Items.ContainsKey(ObjectInfoParent))
-                    output += " from " + NebulaCore.PackageData.FrameItems.Items[ObjectInfoParent].Name;
+                string parentName = Parent?.FrameEvents?.ResolveObjectName(ObjectInfoParent, TypeParent) ?? "Unknown Object";
+                if (parentName != "Unknown Object")
+                    output += " from " + parentName;
                 else
                     output += " from Qualifier " + (ObjectInfoParent & 0x7FFF) + ", Type " + TypeParent;
             }

@@ -1,5 +1,8 @@
-﻿using Nebula.Core.Data.Chunks.FrameChunks.Events;
+﻿using Nebula;
+using Nebula.Core.Data.Chunks.AppChunks;
+using Nebula.Core.Data.Chunks.FrameChunks.Events;
 using Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters;
+using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Memory;
 using Nebula.Core.Utilities;
 
@@ -322,6 +325,224 @@ namespace Nebula.Core.Data.Chunks.FrameChunks
             }
 
             writer.WriteAscii("!DNE");
+        }
+
+        void EnsureMfaQualifiers()
+        {
+            if (!NebulaCore.MFA || Qualifiers.Count > 0)
+                return;
+
+            foreach (EventObject eo in EventObjects.Values)
+            {
+                if (eo.ObjectType != 3)
+                    continue;
+
+                ushort oi = (ushort)eo.Handle;
+                short type = (short)eo.ItemType;
+                if (Qualifiers.Any(q => q.ObjectInfo == oi && q.Type == type))
+                    continue;
+
+                Qualifiers.Add(new Qualifier { ObjectInfo = oi, Type = type });
+            }
+        }
+
+        public ObjectInfo? ResolveObject(int objectInfo)
+        {
+            EnsureMfaQualifiers();
+
+            if (Qualifiers.Any(x => x.ObjectInfo == objectInfo))
+                return null;
+
+            if (NebulaCore.MFA && EventObjects.Count > 0)
+            {
+                if (!EventObjects.TryGetValue(objectInfo, out EventObject? eo))
+                    return null;
+                if (eo.ObjectType != 1)
+                    return null;
+
+                int handle = (int)eo.ItemHandle;
+                if (Parent?.FrameObjectItems.TryGetValue(handle, out ObjectInfo? localOi) == true)
+                    return localOi;
+                if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out ObjectInfo? globalOi))
+                    return globalOi;
+                return null;
+            }
+
+            if (Parent?.FrameObjectItems.TryGetValue(objectInfo, out ObjectInfo? frameOi) == true)
+                return frameOi;
+            if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(objectInfo, out ObjectInfo? fallbackOi))
+                return fallbackOi;
+            return null;
+        }
+
+        public string ResolveObjectName(int objectInfo, short aceObjectType)
+        {
+            EnsureMfaQualifiers();
+
+            if (aceObjectType < 0 && aceObjectType != -7)
+            {
+                return aceObjectType switch
+                {
+                    -1 => "Special",
+                    -2 => "Sound",
+                    -3 => "Storyboard",
+                    -4 => "Timer",
+                    -5 => "Create",
+                    -6 => "Mouse",
+                    -8 => "Game",
+                    _ => "System"
+                };
+            }
+
+            if (NebulaCore.MFA && EventObjects.Count > 0 && EventObjects.TryGetValue(objectInfo, out EventObject? eo))
+            {
+                if (eo.ObjectType == 3)
+                    return GetQualifierDisplayName(eo.SystemQualifier, (short)eo.ItemType);
+                if (eo.ObjectType != 1)
+                    return !string.IsNullOrEmpty(eo.Name) ? eo.Name : "Unknown Object";
+            }
+
+            ObjectInfo? resolved = ResolveObject(objectInfo);
+            if (resolved != null && !string.IsNullOrEmpty(resolved.Name))
+                return resolved.Name;
+
+            if (EventObjects.TryGetValue(objectInfo, out EventObject? evtObj) && !string.IsNullOrEmpty(evtObj.Name))
+                return evtObj.Name;
+
+            Qualifier[] qualifier = Qualifiers.Where(x => x.ObjectInfo == objectInfo && x.Type == aceObjectType).ToArray();
+            if (qualifier.Length > 0)
+                return GetQualifierDisplayName((ushort)(qualifier[0].ObjectInfo & 0x7FFF), qualifier[0].Type);
+
+            return "Unknown Object";
+        }
+
+        public static string GetQualifierDisplayName(ushort systemQualifier, short type)
+        {
+            string qualifierName = "Group." + (systemQualifier & 0x7FFF) switch
+            {
+                0 => "Player",
+                1 => "Good",
+                2 => "Neutral",
+                3 => "Bad",
+                4 => "Enemies",
+                5 => "Friends",
+                6 => "Bullets",
+                7 => "Arms",
+                8 => "Bonus",
+                9 => "Collectables",
+                10 => "Traps",
+                11 => "Doors",
+                12 => "Keys",
+                13 => "Texts",
+                14 => "0",
+                15 => "1",
+                16 => "2",
+                17 => "3",
+                18 => "4",
+                19 => "5",
+                20 => "6",
+                21 => "7",
+                22 => "8",
+                23 => "9",
+                24 => "Parents",
+                25 => "Children",
+                26 => "Data",
+                27 => "Timed",
+                28 => "Engine",
+                29 => "Areas",
+                30 => "Reference Points",
+                31 => "Radar Enemies",
+                32 => "Radar Friends",
+                33 => "Radar Neutrals",
+                34 => "Music",
+                35 => "Sound",
+                36 => "Waveform",
+                37 => "Background Scenery",
+                38 => "Foreground Scenery",
+                39 => "Decorations",
+                40 => "Water",
+                41 => "Clouds",
+                42 => "Empty",
+                43 => "Fog",
+                44 => "Flowers",
+                45 => "Animals",
+                46 => "Bosses",
+                47 => "NPC",
+                48 => "Vehicles",
+                49 => "Rockets",
+                50 => "Balls",
+                51 => "Bombs",
+                52 => "Explosions",
+                53 => "Particles",
+                54 => "Clothes",
+                55 => "Glow",
+                56 => "Arrows",
+                57 => "Buttons",
+                58 => "Cursors",
+                59 => "Drawing Tools",
+                60 => "Indicator",
+                61 => "Shapes",
+                62 => "Shields",
+                63 => "Shifting Blocks",
+                64 => "Magnets",
+                65 => "Negative Matter",
+                66 => "Neutral Matter",
+                67 => "Positive Matter",
+                68 => "Breakable",
+                69 => "Dissolving",
+                70 => "Dialogue",
+                71 => "HUD",
+                72 => "Inventory",
+                73 => "Inventory Item",
+                74 => "Interface",
+                75 => "Movable",
+                76 => "Perspective",
+                77 => "Calculation Objects",
+                78 => "Invisible",
+                79 => "Masks",
+                80 => "Obstacles",
+                81 => "Value Holder",
+                82 => "Helpful",
+                83 => "Powerups",
+                84 => "Targets",
+                85 => "Trapdoors",
+                86 => "Dangers",
+                87 => "Forbidden",
+                88 => "Physical objects",
+                89 => "3D Objects",
+                90 => "Generic 1",
+                91 => "Generic 2",
+                92 => "Generic 3",
+                93 => "Generic 4",
+                94 => "Generic 5",
+                95 => "Generic 6",
+                96 => "Generic 7",
+                97 => "Generic 8",
+                98 => "Generic 9",
+                99 => "Generic 10",
+                _ => string.Empty
+            };
+
+            qualifierName += "." + type switch
+            {
+                2 => "Sprite",
+                3 => "Text",
+                4 => "Question",
+                5 => "Score",
+                6 => "Lives",
+                7 => "Counter",
+                _ => string.Empty
+            };
+
+            if (type >= 32 && NebulaCore.PackageData.Extensions.Exts.ContainsKey(type - 32))
+            {
+                Extension ext = NebulaCore.PackageData.Extensions.Exts[type - 32];
+                qualifierName += ext.Name;
+            }
+
+            if (qualifierName.StartsWith("Group.."))
+                return "Unknown Qualifier";
+            return qualifierName;
         }
     }
 }

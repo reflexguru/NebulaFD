@@ -1,4 +1,5 @@
 ﻿using Nebula.Core.Data.Chunks.AppChunks;
+using Nebula.Core.Data.Chunks.FrameChunks;
 using Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters;
 using Nebula.Core.Data.Chunks.ObjectChunks.ObjectCommon;
 using Nebula.Core.Data.Chunks.ObjectChunks;
@@ -63,15 +64,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
             throw new NotImplementedException();
         }
 
-        public ObjectInfo? GetObject()
-        {
-            if (Parent?.Parent.Qualifiers.Where(x => x.ObjectInfo == ObjectInfo).Any() == true)
-                return null;
-            else if (NebulaCore.MFA && Parent?.Parent.EventObjects.Count > 0)
-                return NebulaCore.PackageData.FrameItems.Items[(int)Parent.Parent.EventObjects[ObjectInfo].ItemHandle];
-            else
-                return NebulaCore.PackageData.FrameItems.Items[ObjectInfo];
-        }
+        public ObjectInfo? GetObject() => Parent?.Parent?.ResolveObject(ObjectInfo);
 
         public string GetGlobalValueName(ParameterChunk param)
         {
@@ -114,7 +107,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
             if (parameter is ParameterShort idData)
             {
                 short id = idData.Value;
-                ObjectCommon? oC = (ObjectCommon)GetObject()?.Properties;
+                ObjectCommon? oC = GetObject()?.Properties as ObjectCommon;
                 if (oC == null || oC.ObjectAlterableValues.Names.Length <= id || string.IsNullOrEmpty(oC.ObjectAlterableValues.Names[id]))
                 {
                     string output = "Alterable Value ";
@@ -133,7 +126,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
             if (parameter is ParameterShort idData)
             {
                 short id = idData.Value;
-                ObjectCommon? oC = (ObjectCommon)GetObject()?.Properties;
+                ObjectCommon? oC = GetObject()?.Properties as ObjectCommon;
                 if (oC == null || oC.ObjectAlterableStrings.Names.Length <= id || string.IsNullOrEmpty(oC.ObjectAlterableStrings.Names[id]))
                 {
                     string output = "Alterable String ";
@@ -286,10 +279,10 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
 
         public string GetObjectName()
         {
-            ObjectInfo? objectInfo = GetObject();
-            if (objectInfo != null)
-                return objectInfo.Name;
-            Qualifier[] qualifier = Parent?.Parent.Qualifiers.Where(x => x.ObjectInfo == ObjectInfo && x.Type == ObjectType).ToArray()!;
+            string resolved = Parent?.Parent?.ResolveObjectName(ObjectInfo, ObjectType) ?? "Unknown Object";
+            if (resolved != "Unknown Object")
+                return resolved;
+            Qualifier[] qualifier = Parent?.Parent?.Qualifiers.Where(x => x.ObjectInfo == ObjectInfo && x.Type == ObjectType).ToArray()!;
             if (qualifier.Length > 0)
                 return GetQualifierName(qualifier.First());
             return "Unknown Object";
@@ -461,10 +454,10 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
 
         public string GetObjectAnimation(short id)
         {
-            ObjectCommon? oC = (ObjectCommon)GetObject()?.Properties;
+            ObjectCommon? oC = GetObject()?.Properties as ObjectCommon;
             if (oC != null && !oC.ObjectAnimations.Animations.ContainsKey(id))
                 return "Deleted Animation " + id;
-            if (oC == null || string.IsNullOrEmpty(oC.ObjectAnimations.Animations[id].Name))
+            if (oC == null || !oC.ObjectAnimations.Animations.TryGetValue(id, out var anim) || string.IsNullOrEmpty(anim.Name))
             {
                 return id switch
                 {
@@ -483,19 +476,15 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                     _ => "Animation " + id
                 };
             }
-            else return oC.ObjectAnimations.Animations[id].Name;
+            else return anim.Name;
         }
 
         public string GetFrameName(short id)
         {
-            try
-            {
-                return $"\"{NebulaCore.PackageData.Frames[NebulaCore.PackageData.FrameHandles[id]].FrameName}\" ({NebulaCore.PackageData.FrameHandles[id] + 1})";
-            }
-            catch
-            {
-                return "(ERROR: UNKNOWN FRAME)";
-            }
+            Frame? frame = NebulaCore.PackageData.Frames.FirstOrDefault(f => f.Handle == id);
+            if (frame != null)
+                return $"\"{frame.FrameName}\" ({frame.Handle})";
+            return "(ERROR: UNKNOWN FRAME)";
         }
 
         public string GetDirectionSettings(short id)

@@ -1,4 +1,7 @@
-﻿using Nebula.Core.Memory;
+﻿using Nebula.Core.Data.Chunks.FrameChunks;
+using Nebula.Core.Data.Chunks.FrameChunks.Events;
+using Nebula.Core.Data.Chunks.ObjectChunks;
+using Nebula.Core.Memory;
 
 namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 {
@@ -70,9 +73,28 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
             writer.WriteShort(ShootSpeed);
         }
 
+        string ResolveShootObjectName()
+        {
+            FrameEvents? fe = Parent?.FrameEvents;
+            Frame? frame = fe?.Parent;
+            if (frame?.FrameObjectItems.TryGetValue(ObjectInfo, out ObjectInfo? localOi) == true && localOi != null)
+                return localOi.Name;
+            if (fe != null && fe.EventObjects.TryGetValue(ObjectInfo, out EventObject? eo) && eo.ObjectType == 1)
+            {
+                int handle = (int)eo.ItemHandle;
+                if (frame?.FrameObjectItems.TryGetValue(handle, out localOi) == true && localOi != null)
+                    return localOi.Name;
+                if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out localOi))
+                    return localOi.Name;
+            }
+            if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(ObjectInfo, out localOi))
+                return localOi.Name;
+            return "Unknown Object";
+        }
+
         public override string ToString()
         {
-            string output = NebulaCore.PackageData.FrameItems.Items[ObjectInfo].Name;
+            string output = ResolveShootObjectName();
             if (!ShootFlags["CalculateDirection"])
                 output += " toward " + GetDirection();
             return output + " at speed " + ShootSpeed;

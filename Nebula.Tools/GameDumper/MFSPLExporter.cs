@@ -5,6 +5,7 @@ using Nebula.Core.Data.Chunks.FrameChunks;
 using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Data.Chunks.ObjectChunks.ObjectCommon;
 using Nebula.Core.Data.PackageReaders;
+using Nebula.Core.Memory;
 using Nebula.Core.Utilities;
 using Spectre.Console;
 using System.Drawing;
@@ -16,6 +17,9 @@ using Event = Nebula.Core.Data.Chunks.FrameChunks.Events.Event;
 using Action = Nebula.Core.Data.Chunks.FrameChunks.Events.Action;
 using Condition = Nebula.Core.Data.Chunks.FrameChunks.Events.Condition;
 using ACEventBase = Nebula.Core.Data.Chunks.FrameChunks.Events.ACEventBase;
+using EventObject = Nebula.Core.Data.Chunks.FrameChunks.Events.EventObject;
+using Parameter = Nebula.Core.Data.Chunks.FrameChunks.Events.Parameter;
+using Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters;
 using Image = Nebula.Core.Data.Chunks.BankChunks.Images.Image;
 
 #pragma warning disable CS8602
@@ -56,7 +60,7 @@ namespace Nebula.Tools.GameDumper
         {
             Directory.CreateDirectory(outputDir);
             File.WriteAllText(Path.Combine(outputDir, "objects.json"), JsonSerializer.Serialize(BuildObjectsDoc(mfa), JsonOptions));
-            File.WriteAllText(Path.Combine(outputDir, "events.json"), JsonSerializer.Serialize(BuildEventsDoc(mfa), JsonOptions));
+            File.WriteAllText(Path.Combine(outputDir, "events.json"), JsonSerializer.Serialize(BuildEventsDoc(mfa), new JsonSerializerOptions { WriteIndented = false }));
             return new ExportResult { Frames = mfa.Frames.Count, Objects = mfa.FrameItems.Items.Count };
         }
 
@@ -208,7 +212,9 @@ namespace Nebula.Tools.GameDumper
         /// Exports every frame's backdrop instances (QuickBackdrop type 0 and Backdrop type 1) as a
         /// faithful raw-rect list: one entry per placed instance with its original position/size,
         /// obstacle flag, image handle and the instance order (index in the frame's instance list).
-        /// No splitting or tile classification is performed here — that is the generator's job.
+        /// Image/name are taken from the <b>frame-local</b> object definition (same object name on
+        /// another frame can be a different graphic). No splitting or tile classification is
+        /// performed here — that is the generator's job.
         /// Output: tiles.json (one per level).
         /// </summary>
         public static TileExportResult ExportTiles(MFAPackageData mfa, string outputDir)
@@ -223,7 +229,7 @@ namespace Nebula.Tools.GameDumper
                 int order = 0;
                 foreach (var inst in frm.FrameInstances.Instances)
                 {
-                    if (!mfa.FrameItems.Items.TryGetValue((int)inst.ObjectInfo, out var oi))
+                    if (!TryGetFrameObject(mfa, frm, inst.ObjectInfo, out var oi) || oi == null)
                     {
                         order++;
                         continue;
@@ -286,7 +292,7 @@ namespace Nebula.Tools.GameDumper
                     if (w > 480 || h > 480)
                         isBackground = true;
 
-                    tiles.Add(new Dictionary<string, object?>
+                    var tile = new Dictionary<string, object?>
                     {
                         ["x"] = inst.PositionX,
                         ["y"] = inst.PositionY,
@@ -300,10 +306,19 @@ namespace Nebula.Tools.GameDumper
                         ["verticalGradient"] = verticalGradient,
                         ["isBackground"] = isBackground,
                         ["object"] = oi.Name,
+                        ["objectInfo"] = inst.ObjectInfo,
                         ["objectType"] = oi.Header.Type,
                         ["layer"] = inst.Layer,
                         ["order"] = order,
-                    });
+                    };
+                    foreach (var ink in InkOf(oi))
+                        tile[ink.Key] = ink.Value;
+                    if (fillType is 1 or 2 && oi.Properties is ObjectQuickBackdrop qbColors)
+                    {
+                        tile["color1Rgb"] = Rgb(qbColors.Shape.Color1);
+                        tile["color2Rgb"] = Rgb(qbColors.Shape.Color2);
+                    }
+                    tiles.Add(tile);
                     tileCount++;
                     order++;
                 }
@@ -370,16 +385,26 @@ namespace Nebula.Tools.GameDumper
                             ["raw"] = flags.Value,
                         },
                         ["layerFlagsRaw"] = layer.LayerFlags.Value,
+                        ["effect"] = LayerEffectOf(layer.Effect),
                     });
                     layerCount++;
                 }
 
+                var frameFx = frm.FrameEffects;
                 framesDoc.Add(new Dictionary<string, object?>
                 {
                     ["name"] = frm.FrameName,
                     ["handle"] = frm.Handle,
                     ["width"] = frm.FrameHeader.Width,
                     ["height"] = frm.FrameHeader.Height,
+                    ["frameEffect"] = frameFx != null
+                        ? new Dictionary<string, object?>
+                        {
+                            ["inkEffect"] = frameFx.InkEffect,
+                            ["blendCoeff"] = frameFx.BlendCoeff,
+                            ["rgbCoeff"] = Rgb(frameFx.RGBCoeff),
+                        }
+                        : null,
                     ["layers"] = layers,
                 });
             }
@@ -413,7 +438,27 @@ namespace Nebula.Tools.GameDumper
 
             int objects = 0, sheets = 0, skipped = 0;
 
-            foreach (var oi in mfa.FrameItems.Items.Values)
+            // Walk every frame's own object list. A name like "Backdrop 26" / "Now Playing"
+            // can refer to a different Active on another frame; the global FrameItems map
+            // only keeps the first handle and would drop the rest.
+            IEnumerable<ObjectInfo> AllFrameObjects()
+            {
+                bool anyLocal = false;
+                foreach (var frm in mfa.Frames)
+                {
+                    if (frm.FrameObjectItems.Count == 0) continue;
+                    anyLocal = true;
+                    foreach (var oi in frm.FrameObjectItems.Values)
+                        yield return oi;
+                }
+                if (!anyLocal)
+                {
+                    foreach (var oi in mfa.FrameItems.Items.Values)
+                        yield return oi;
+                }
+            }
+
+            foreach (var oi in AllFrameObjects())
             {
                 if (oi.Header.Type != 2) continue; // Active only
                 if (oi.Properties is not ObjectCommon oc) continue;
@@ -642,6 +687,8 @@ namespace Nebula.Tools.GameDumper
 
         static Dictionary<string, object?> BuildObjectsDoc(MFAPackageData mfa)
         {
+            // Global map is first-seen-per-handle only. Consumers that need the real
+            // per-frame object (same name, different graphic) must use frames[].objectTypes.
             var objectTypes = new Dictionary<string, object?>();
             foreach (var kv in mfa.FrameItems.Items)
                 objectTypes[kv.Key.ToString()] = BuildTypeDef(kv.Value);
@@ -660,6 +707,7 @@ namespace Nebula.Tools.GameDumper
                     ["height"] = mfa.AppHeader.AppHeight,
                 },
                 ["objectTypes"] = objectTypes,
+                ["objectTypesScope"] = "global-first-seen",
                 ["frames"] = frames,
             };
         }
@@ -738,11 +786,18 @@ namespace Nebula.Tools.GameDumper
             }
             catch { /* best-effort per object type */ }
 
+            foreach (var ink in InkOf(oi))
+                d[ink.Key] = ink.Value;
+
             return d;
         }
 
         static Dictionary<string, object?> BuildFrame(Frame frm)
         {
+            var frameTypes = new Dictionary<string, object?>();
+            foreach (var kv in frm.FrameObjectItems)
+                frameTypes[kv.Key.ToString()] = BuildTypeDef(kv.Value);
+
             var instances = new List<object?>();
             foreach (var inst in frm.FrameInstances.Instances)
                 instances.Add(new Dictionary<string, object?>
@@ -762,8 +817,20 @@ namespace Nebula.Tools.GameDumper
                 ["handle"] = frm.Handle,
                 ["width"] = frm.FrameHeader.Width,
                 ["height"] = frm.FrameHeader.Height,
+                ["objectTypes"] = frameTypes,
                 ["instances"] = instances,
             };
+        }
+
+        /// <summary>
+        /// Resolves an instance's object type from the frame it sits on. MFA object
+        /// definitions are per-frame; the app-global FrameItems map is only a fallback.
+        /// </summary>
+        static bool TryGetFrameObject(MFAPackageData mfa, Frame frm, uint handle, out ObjectInfo? oi)
+        {
+            if (frm.FrameObjectItems.TryGetValue((int)handle, out oi) && oi != null)
+                return true;
+            return mfa.FrameItems.Items.TryGetValue((int)handle, out oi);
         }
 
         // ---------------- events.json ----------------
@@ -774,8 +841,7 @@ namespace Nebula.Tools.GameDumper
             foreach (var evt in mfa.GlobalEvents.Events)
                 globalEvents.Add(BuildEvent(evt));
 
-            // Dedup index: fingerprint -> { event, occurrence list }
-            var fpMap = new Dictionary<string, Dictionary<string, object?>>();
+            var fpMap = new Dictionary<string, List<string>>();
             var fpOrder = new List<string>();
 
             void IndexEvent(Event evt, string occurrence)
@@ -783,15 +849,10 @@ namespace Nebula.Tools.GameDumper
                 string fp = FingerprintEvent(evt);
                 if (!fpMap.ContainsKey(fp))
                 {
-                    fpMap[fp] = new Dictionary<string, object?>
-                    {
-                        ["fingerprint"] = fp,
-                        ["frames"] = new List<string>(),
-                        ["event"] = BuildEvent(evt),
-                    };
+                    fpMap[fp] = new List<string>();
                     fpOrder.Add(fp);
                 }
-                ((List<string>)fpMap[fp]["frames"]!).Add(occurrence);
+                fpMap[fp].Add(occurrence);
             }
 
             foreach (var evt in mfa.GlobalEvents.Events)
@@ -807,24 +868,56 @@ namespace Nebula.Tools.GameDumper
                     evts.Add(BuildEvent(evt));
                     IndexEvent(evt, $"{frm.FrameName}#{i}");
                 }
+
+                var fe = frm.FrameEvents;
                 frames.Add(new Dictionary<string, object?>
                 {
                     ["name"] = frm.FrameName,
+                    ["handle"] = frm.Handle,
                     ["events"] = evts,
+                    ["eventObjects"] = fe.EventObjects.Values
+                        .OrderBy(o => o.Handle)
+                        .Select(o => (object)new Dictionary<string, object?>
+                        {
+                            ["handle"] = o.Handle,
+                            ["name"] = o.Name,
+                            ["objectType"] = o.ObjectType,
+                            ["itemType"] = o.ItemType,
+                            ["itemHandle"] = o.ItemHandle,
+                            ["instanceHandle"] = o.InstanceHandle,
+                            ["systemQualifier"] = o.SystemQualifier,
+                        }).ToList(),
+                    ["qualifiers"] = fe.Qualifiers
+                        .Select(q => (object)new Dictionary<string, object?>
+                        {
+                            ["objectInfo"] = q.ObjectInfo,
+                            ["type"] = q.Type,
+                        }).ToList(),
+                    ["eventGroups"] = fe.EventGroups
+                        .Select(g => (object)new Dictionary<string, object?>
+                        {
+                            ["handle"] = g.Handle,
+                            ["name"] = g.Name,
+                            ["uuid"] = g.UUID,
+                        }).ToList(),
+                    ["comments"] = fe.Comments
+                        .Select(c => (object)new Dictionary<string, object?>
+                        {
+                            ["handle"] = c.Handle,
+                            ["value"] = c.Value,
+                        }).ToList(),
                 });
             }
 
             var dedup = new List<object?>();
             foreach (var fp in fpOrder)
             {
-                var entry = fpMap[fp];
-                var occ = (List<string>)entry["frames"]!;
+                var occ = fpMap[fp];
                 dedup.Add(new Dictionary<string, object?>
                 {
                     ["fingerprint"] = fp,
                     ["count"] = occ.Count,
                     ["frames"] = occ,
-                    ["event"] = entry["event"],
                 });
             }
 
@@ -838,49 +931,237 @@ namespace Nebula.Tools.GameDumper
 
         static Dictionary<string, object?> BuildEvent(Event evt)
         {
-            return new Dictionary<string, object?>
+            var d = new Dictionary<string, object?>
             {
                 ["conditions"] = evt.Conditions.Select(c => BuildCondition(c)).ToList(),
                 ["actions"] = evt.Actions.Select(a => BuildAction(a)).ToList(),
                 ["flags"] = evt.EventFlags.Value,
+                ["flagsDecoded"] = new Dictionary<string, object?>
+                {
+                    ["once"] = evt.EventFlags["Once"],
+                    ["notAlways"] = evt.EventFlags["NotAlways"],
+                    ["repeat"] = evt.EventFlags["Repeat"],
+                    ["noMore"] = evt.EventFlags["NoMore"],
+                    ["shuffle"] = evt.EventFlags["Shuffle"],
+                    ["hasChildren"] = evt.EventFlags["HasChildren"],
+                    ["break"] = evt.EventFlags["Break"],
+                    ["grouped"] = evt.EventFlags["Grouped"],
+                    ["inactive"] = evt.EventFlags["Inactive"],
+                    ["hasParent"] = evt.EventFlags["HasParent"],
+                    ["hasOr"] = evt.EventFlags["HasOr"],
+                    ["hasStop"] = evt.EventFlags["HasStop"],
+                    ["hasOrLogical"] = evt.EventFlags["HasOrLogical"],
+                },
+                ["restricted"] = evt.Restricted,
+                ["restrictCpt"] = evt.RestrictCpt,
+                ["identifier"] = evt.Identifier,
             };
+
+            if (evt.Conditions.Count > 0)
+            {
+                Condition c0 = evt.Conditions[0];
+                if (c0.ObjectType == -1 && c0.Num == -10 && c0.Parameters.Length > 0
+                    && c0.Parameters[0].Data is ParameterGroup pg)
+                {
+                    d["group"] = new Dictionary<string, object?>
+                    {
+                        ["id"] = pg.ID,
+                        ["name"] = pg.Name,
+                        ["inactiveOnStart"] = pg.GroupFlags["InactiveOnStart"],
+                        ["closed"] = pg.GroupFlags["Closed"],
+                    };
+                }
+            }
+
+            return d;
         }
 
         static Dictionary<string, object?> BuildCondition(Condition c)
         {
-            return new Dictionary<string, object?>
+            string text = SafeText(c, out string? textErr);
+            var d = new Dictionary<string, object?>
             {
                 ["objectType"] = c.ObjectType,
                 ["num"] = c.Num,
                 ["objectInfo"] = c.ObjectInfo,
                 ["negated"] = c.OtherFlags["Negated"],
                 ["object"] = SafeObjectName(c),
-                ["text"] = SafeText(c),
+                ["text"] = text,
                 ["params"] = c.Parameters.Select(p => BuildParam(p)).ToList(),
+                ["identifier"] = c.Identifier,
             };
+            if (textErr != null)
+                d["error"] = textErr;
+            TryAddItemHandle(d, c);
+            return d;
         }
 
         static Dictionary<string, object?> BuildAction(Action a)
         {
-            return new Dictionary<string, object?>
+            string text = SafeText(a, out string? textErr);
+            var d = new Dictionary<string, object?>
             {
                 ["objectType"] = a.ObjectType,
                 ["num"] = a.Num,
                 ["objectInfo"] = a.ObjectInfo,
                 ["object"] = SafeObjectName(a),
-                ["text"] = SafeText(a),
+                ["text"] = text,
                 ["params"] = a.Parameters.Select(p => BuildParam(p)).ToList(),
             };
+            if (textErr != null)
+                d["error"] = textErr;
+            TryAddItemHandle(d, a);
+            return d;
         }
 
-        static Dictionary<string, object?> BuildParam(Nebula.Core.Data.Chunks.FrameChunks.Events.Parameter p)
+        static Dictionary<string, object?> BuildParam(Parameter p)
         {
-            return new Dictionary<string, object?>
+            var d = new Dictionary<string, object?>
             {
                 ["code"] = p.Code,
-                ["text"] = SafeText(p),
+                ["text"] = SafeText(p, out _),
             };
+
+            try
+            {
+                switch (p.Data)
+                {
+                    case ParameterGroup grp:
+                        d["kind"] = "group";
+                        d["id"] = grp.ID;
+                        d["name"] = grp.Name;
+                        d["inactiveOnStart"] = grp.GroupFlags["InactiveOnStart"];
+                        d["closed"] = grp.GroupFlags["Closed"];
+                        break;
+                    case ParameterGroupPointer ptr:
+                        d["kind"] = "groupPointer";
+                        d["id"] = ptr.ID;
+                        break;
+                    case ParameterCreate create:
+                        d["kind"] = "create";
+                        d["objectInfo"] = create.ObjectInfo;
+                        d["x"] = create.X;
+                        d["y"] = create.Y;
+                        d["layer"] = create.Layer;
+                        d["parent"] = create.ObjectInfoParent;
+                        d["flags"] = create.CreateFlags.Value;
+                        d["flagsDecoded"] = PositionCreateFlagsDecoded(create.CreateFlags);
+                        TryAddCreateObjectName(d, p, create.ObjectInfo);
+                        break;
+                    case ParameterPosition pos:
+                        d["kind"] = "position";
+                        d["x"] = pos.X;
+                        d["y"] = pos.Y;
+                        d["layer"] = pos.Layer;
+                        d["parent"] = pos.ObjectInfoParent;
+                        d["flags"] = pos.PositionFlags.Value;
+                        d["flagsDecoded"] = PositionCreateFlagsDecoded(pos.PositionFlags);
+                        break;
+                    case ParameterShoot shoot:
+                        d["kind"] = "shoot";
+                        d["objectInfo"] = shoot.ObjectInfo;
+                        d["x"] = shoot.X;
+                        d["y"] = shoot.Y;
+                        d["layer"] = shoot.Layer;
+                        d["speed"] = shoot.ShootSpeed;
+                        d["flags"] = shoot.ShootFlags.Value;
+                        d["flagsDecoded"] = new Dictionary<string, object?>
+                        {
+                            ["calculateDirection"] = shoot.ShootFlags["CalculateDirection"],
+                        };
+                        break;
+                    case ParameterExpressions exps:
+                        d["kind"] = "expression";
+                        d["comparison"] = exps.Comparison;
+                        d["comparisonOp"] = ComparisonOp(exps.Comparison);
+                        d["tokens"] = exps.Expressions.Select(e => SafeText(e, out _)).ToList();
+                        break;
+                    case ParameterChildEvent child:
+                        d["kind"] = "childEvents";
+                        d["objectInfos"] = child.ObjectInfos.Cast<object>().ToList();
+                        break;
+                    case ParameterObject obj:
+                        d["kind"] = "object";
+                        d["objectInfo"] = obj.ObjectInfo;
+                        d["objectType"] = obj.ObjectType;
+                        d["name"] = SafeText(obj, out _);
+                        break;
+                    default:
+                        if (p.Data != null)
+                        {
+                            d["kind"] = "primitive";
+                            d["value"] = SafeText(p.Data, out _);
+                        }
+                        break;
+                }
+            }
+            catch { /* best-effort structured param fields */ }
+
+            return d;
         }
+
+        static void TryAddItemHandle(Dictionary<string, object?> d, ACEventBase ace)
+        {
+            if (!NebulaCore.MFA)
+                return;
+            if (ace.ObjectType < 0 && ace.ObjectType != -7)
+                return;
+            FrameEvents? fe = ace.Parent?.Parent;
+            if (fe == null || fe.EventObjects.Count == 0)
+                return;
+            if (fe.EventObjects.TryGetValue(ace.ObjectInfo, out EventObject? eo) && eo != null)
+                d["itemHandle"] = eo.ItemHandle;
+        }
+
+        static void TryAddCreateObjectName(Dictionary<string, object?> d, Parameter p, ushort objectInfo)
+        {
+            try
+            {
+                Frame? frm = p.FrameEvents?.Parent;
+                if (frm?.FrameObjectItems.TryGetValue(objectInfo, out ObjectInfo? oi) == true && oi != null)
+                {
+                    d["objectName"] = oi.Name;
+                    return;
+                }
+                FrameEvents? fe = p.FrameEvents;
+                if (fe != null && fe.EventObjects.TryGetValue(objectInfo, out EventObject? eo) && eo.ObjectType == 1)
+                {
+                    int handle = (int)eo.ItemHandle;
+                    if (frm?.FrameObjectItems.TryGetValue(handle, out oi) == true && oi != null)
+                    {
+                        d["objectName"] = oi.Name;
+                        return;
+                    }
+                    if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out oi) && oi != null)
+                    {
+                        d["objectName"] = oi.Name;
+                        return;
+                    }
+                }
+                if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(objectInfo, out oi) && oi != null)
+                    d["objectName"] = oi.Name;
+            }
+            catch { }
+        }
+
+        static Dictionary<string, object?> PositionCreateFlagsDecoded(BitDict flags) => new()
+        {
+            ["offsetFromActionPoint"] = flags["OffsetFromActionPoint"],
+            ["offsetFromDirection"] = flags["OffsetFromDirection"],
+            ["inheritDirection"] = flags["InheritDirection"],
+            ["dontInheritDirection"] = flags["DontInheritDirection"],
+        };
+
+        static string ComparisonOp(short comparison) => comparison switch
+        {
+            0 => "=",
+            1 => "<>",
+            2 => "<=",
+            3 => "<",
+            4 => ">=",
+            5 => ">",
+            _ => "=",
+        };
 
         // ---------------- fingerprint / helpers ----------------
 
@@ -902,9 +1183,9 @@ namespace Nebula.Tools.GameDumper
         {
             var sb = new StringBuilder();
             sb.Append("C").Append(c.ObjectType).Append(',').Append(c.Num).Append(',')
-              .Append(SafeObjectName(c)).Append(',').Append(c.OtherFlags["Negated"]);
+              .Append(c.ObjectInfo).Append(',').Append(c.OtherFlags["Negated"]);
             foreach (var p in c.Parameters)
-                sb.Append(',').Append(p.Code).Append(':').Append(SafeText(p));
+                sb.Append(',').Append(p.Code).Append(':').Append(SafeText(p, out _));
             return sb.ToString();
         }
 
@@ -912,9 +1193,9 @@ namespace Nebula.Tools.GameDumper
         {
             var sb = new StringBuilder();
             sb.Append("A").Append(a.ObjectType).Append(',').Append(a.Num).Append(',')
-              .Append(SafeObjectName(a));
+              .Append(a.ObjectInfo);
             foreach (var p in a.Parameters)
-                sb.Append(',').Append(p.Code).Append(':').Append(SafeText(p));
+                sb.Append(',').Append(p.Code).Append(':').Append(SafeText(p, out _));
             return sb.ToString();
         }
 
@@ -924,11 +1205,50 @@ namespace Nebula.Tools.GameDumper
             catch { return $"#{ace.ObjectInfo}"; }
         }
 
-        static string SafeText(object o)
+        static string SafeText(object o) => SafeText(o, out _);
+
+        static string SafeText(object o, out string? error)
         {
-            try { return o.ToString() ?? ""; }
-            catch { return ""; }
+            error = null;
+            try
+            {
+                string text = o.ToString() ?? "";
+                if (text.StartsWith("[ERROR]", StringComparison.Ordinal))
+                    error = text;
+                return text;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return "";
+            }
         }
+
+        static Dictionary<string, object?> Rgb(System.Drawing.Color c) => new()
+        {
+            ["r"] = c.R,
+            ["g"] = c.G,
+            ["b"] = c.B,
+            ["a"] = 255,
+        };
+
+        static Dictionary<string, object?> InkOf(ObjectInfo oi) => new()
+        {
+            ["inkEffect"] = oi.Header.InkEffect,
+            ["inkEffectParam"] = oi.Header.InkEffectParam,
+            ["blendCoeff"] = oi.Header.BlendCoeff,
+            ["rgbCoeff"] = Rgb(oi.Header.RGBCoeff),
+            ["transparent"] = !oi.Header.InkEffectFlags["NotTransparent"],
+            ["antiAliasing"] = oi.Header.InkEffectFlags["AntiAliasing"],
+        };
+
+        static Dictionary<string, object?> LayerEffectOf(FrameLayerEffect effect) => new()
+        {
+            ["inkEffect"] = effect.InkEffect,
+            ["inkEffectParam"] = effect.InkEffectParam,
+            ["blendCoeff"] = effect.BlendCoeff,
+            ["rgbCoeff"] = Rgb(effect.RGBCoeff),
+        };
 
         static string TypeName(int type) => type switch
         {

@@ -35,7 +35,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 
         public override string ToString()
         {
-            return "Unknown Parameter Chunk " + Code == null ? "" : Code.ToString()!;
+            return Code == null ? "Unknown Parameter Chunk" : $"Unknown Parameter Chunk {Code}";
         }
     }
 }

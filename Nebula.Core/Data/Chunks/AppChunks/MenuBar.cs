@@ -89,6 +89,12 @@ namespace Nebula.Core.Data.Chunks.AppChunks
                 AccelId.Add(reader.ReadShort());
                 reader.Skip(2);
             }
+
+            // MFA menu blob is mainSize bytes after the size field and may have
+            // trailing padding the accel table does not consume. Without this
+            // seek the next app-header fields (WindowMenu / globals) desync and
+            // ReadAutoYuniversal throws EndOfStreamException.
+            reader.Seek(startOffset + mainSize);
         }
 
         public override void WriteCCN(ByteWriter writer, params object[] extraInfo)

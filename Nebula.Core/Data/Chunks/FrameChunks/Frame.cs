@@ -37,6 +37,13 @@ namespace Nebula.Core.Data.Chunks.FrameChunks
         public int Handle = -1;                               // 0x334C
 
         public MFAFrameInfo MFAFrameInfo = new();
+        /// <summary>
+        /// Object types as they appear on THIS frame. MFA stores a full object definition
+        /// per frame: the same name (and even the same handle) can have a different image
+        /// or animations on another frame. Never substitute these with the app-global
+        /// <see cref="PackageData.FrameItems"/> first-write-wins map when exporting a frame.
+        /// </summary>
+        public Dictionary<int, ObjectInfo> FrameObjectItems = new();
         public Bitmap? BitmapCache = null;
         public Dictionary<short, ParameterGroup> GroupLookupTable = new();
 
@@ -131,6 +138,8 @@ namespace Nebula.Core.Data.Chunks.FrameChunks
                 if (newChunk is Last)
                     break;
             }
+
+            Fix();
 
             this.Log($"Frame '{FrameName}' found.", color: ConsoleColor.Green);
         }
@@ -502,6 +511,24 @@ namespace Nebula.Core.Data.Chunks.FrameChunks
 
         public void Fix()
         {
+            if (NebulaCore.MFA)
+            {
+                foreach (Event evnt in FrameEvents.Events)
+                {
+                    foreach (Condition cond in evnt.Conditions)
+                        foreach (Parameter param in cond.Parameters.Where(x => x.Code == 38))
+                            if (param.Data is ParameterGroup group)
+                                GroupLookupTable.TryAdd(group.ID, group);
+                    foreach (Events.Action act in evnt.Actions)
+                        foreach (Parameter param in act.Parameters.Where(x => x.Code == 38))
+                            if (param.Data is ParameterGroup group)
+                                GroupLookupTable.TryAdd(group.ID, group);
+                }
+                foreach (EventGroup eg in FrameEvents.EventGroups)
+                    GroupLookupTable.TryAdd(eg.Handle, new ParameterGroup { ID = eg.Handle, Name = eg.Name });
+                return;
+            }
+
             if (NebulaCore.Windows && NebulaCore.Fusion >= 2.0)
             {
                 Dictionary<long, ParameterGroup> groupLookupTable = new();

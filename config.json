@@ -1,0 +1,38 @@
+{
+// Whether or not to avoid reading image data
+  "ignore_images": false,
+// Whether or not to avoid reading font data
+  "ignore_fonts": false,
+// Whether or not to avoid reading sound data
+  "ignore_sounds": false,
+// Whether or not to avoid reading music data
+  "ignore_music": false,
+// Whether or not to avoid reading events
+  "ignore_events": false,
+// Whether or not to avoid reading shaders and shader data
+  "ignore_shaders": false,
+// Whether or not to avoid reading objects and object data
+  "ignore_objects": false,
+// Whether or not to avoid reading binary file data
+  "ignore_binaryfiles": false,
+// Whether or not to dump unknown chunks to a 'Chunks' folder
+  "dump_unk_chunks": false,
+// Whether or not to dump all chunks to a 'Chunks' folder
+  "dump_all_chunks": false,
+// Whether or not to force reading as unicode
+  "force_unicode": false,
+// Whether or not to avoid using the header for text encoding
+  "ignore_header": false,
+// Override the runtime version
+  "override_runtime_version": -1,
+// Whether or not to force reading images with the 2.5 reader rather than the 2.5+ reader
+  "force_image_reader": false,
+// Whether or not to use the GPU to translate images (EXPERIMENTAL)
+  "gpu_acceleration": false,
+// Whether or not to silently log events to the log file
+  "silent_log_events": false,
+// Whether or not to invert the ignore_frames selection
+  "invert_ignore_frames": false,
+// An array of frame ids to ignore reading, index starts at 0
+  "ignore_frames": []
+}

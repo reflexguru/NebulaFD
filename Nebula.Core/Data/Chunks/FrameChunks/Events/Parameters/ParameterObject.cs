@@ -43,15 +43,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
             return "Unknown Object";
         }
 
-        public ObjectInfo? GetObject()
-        {
-            if (Parent?.FrameEvents?.Qualifiers.Where(x => x.ObjectInfo == ObjectInfo).Any() == true)
-                return null;
-            else if (NebulaCore.MFA && Parent?.FrameEvents?.EventObjects.Count > 0)
-                return NebulaCore.PackageData.FrameItems.Items[(int)Parent.FrameEvents.EventObjects[ObjectInfo].ItemHandle];
-            else
-                return NebulaCore.PackageData.FrameItems.Items[ObjectInfo];
-        }
+        public ObjectInfo? GetObject() => Parent?.FrameEvents?.ResolveObject(ObjectInfo);
 
         public string GetQualifierName(Qualifier qualifier)
         {

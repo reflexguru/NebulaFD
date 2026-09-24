@@ -636,6 +636,14 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                             return $"Menu option \"{GetMenuItemName(((ParameterInt)Parameters[0].Data).Value)}\" selected";
                         case -12:
                             return $"Group \"{Parameters[0]}\" is activated";
+                        case -11:
+                            return "End of group";
+                        case -10:
+                            if (Parameters.Length > 0 && Parameters[0].Data is ParameterGroup grp)
+                                return $"Start of group \"{grp.Name}\"";
+                            return $"Start of group \"{Parameters[0]}\"";
+                        case -9:
+                            return Parameters.Length > 0 ? $"Child event ({Parameters[0]})" : "Child event";
                         case -8:
                             return $"{GetGlobalValueName(Parameters[0].Data)} {GetComparison(((ParameterExpressions)Parameters[1].Data).Comparison)} {Parameters[1]}";
                         case -7:

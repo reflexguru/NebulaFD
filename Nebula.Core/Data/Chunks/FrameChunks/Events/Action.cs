@@ -511,7 +511,15 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                         case 1:
                             return Header + "Previous frame";
                         case 2:
-                            return Header + $"Jump to frame {((Parameters[0].Data is ParameterExpressions) ? Parameters[0] : GetFrameName(((ParameterShort)Parameters[0].Data).Value))}";
+                            if (Parameters[0].Data is ParameterExpressions)
+                                return Header + $"Jump to frame {Parameters[0]}";
+                            short jumpHandle = Parameters[0].Data switch
+                            {
+                                ParameterShort ps => ps.Value,
+                                ParameterInt pi => (short)pi.Value,
+                                _ => -1
+                            };
+                            return Header + $"Jump to frame {GetFrameName(jumpHandle)}";
                         case 4:
                             return Header + "End the application";
                         case 5:
@@ -664,6 +672,8 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                     {
                         default:
                             return $"[ERROR] Could not find ObjectType {ObjectType}, Num {Num}";
+                        case 0:
+                            return ""; // MFA dummy action on group header; not ERROR
                         case 2:
                             ParameterFile file2 = (ParameterFile)Parameters[0].Data;
                             return Header + $"Execute external program {file2.FileName} {file2.Command}{(file2.FileFlags["WaitForEnd"] && file2.FileFlags["HideApplication"] ? " (wait,hide)" : file2.FileFlags["WaitForEnd"] ? " (wait)" : file2.FileFlags["HideApplication"] ? " (hide)" : "")}";

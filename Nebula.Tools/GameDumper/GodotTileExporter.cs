@@ -1,6 +1,10 @@
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+
+#pragma warning disable CA1416
 
 namespace Nebula.Tools.GameDumper
 {
@@ -19,16 +23,14 @@ namespace Nebula.Tools.GameDumper
     ///    - if several tiles claim the same TileMap cell (overlap conflict), the one that appears
     ///      LOWER in the source order stays as a StaticBody2D, the higher (first-in-order) wins the cell.
     ///
-    /// Tile atlas coords are computed from the source image via motif (tiling) sampling: a sub-tile at
-    /// offset (dx,dy) inside the object rect shows the image region ((dx mod imgW), (dy mod imgH)).
-    /// Only image-aligned 32x32 regions that fit inside the image become TileMap cells; everything else
-    /// is emitted as a StaticBody2D/Sprite2D fragment carrying its own image region.
+    /// Tile atlas coords use motif sampling against the ORIGINAL image size (dx mod origW). PNGs whose
+    /// size is not a multiple of 32 are padded with transparency to the next 32 grid so they can live
+    /// in a TileSetAtlasSource; leftover strips still become StaticBody2D.
     ///
-    /// Outputs per level: tilemap.json (cells + statics + backgrounds), tileset.tres (TileSetAtlasSource
-    /// over the asset PNGs, with collision polygons on obstacle tiles), tilemap.tscn. The TileMapLayer
-    /// cells are baked into tile_map_data (Godot 4 format) AND every StaticBody2D fragment (overlap
-    /// losers, non-aligned pieces) is baked as a scene node, so the whole level shows in the editor
-    /// with zero script execution and opens fast.
+    /// One tileset.tres + tilemap.tscn is written <b>per MFA frame</b> under frames/&lt;name&gt;/.
+    /// Frames are never merged: same cell coordinates on LEVEL 2 and LEVEL 13 are different worlds,
+    /// and the same object name on two frames can be a different graphic.
+    /// Combined tilemap.json (per-frame cells/statics/backgrounds) stays at the output root.
     /// </summary>
     public class GodotTileExporter
     {
@@ -41,6 +43,7 @@ namespace Nebula.Tools.GameDumper
             public int StaticBodies;
             public int Backgrounds;
             public int Conflicts;
+            public int FrameScenes;
         }
 
         sealed class ImageInfo
@@ -49,6 +52,9 @@ namespace Nebula.Tools.GameDumper
             public string File = "";
             public int Width;
             public int Height;
+            /// <summary>Unpadded pixel size used for motif wrapping and leftover clips.</summary>
+            public int OrigWidth;
+            public int OrigHeight;
         }
 
         /// <param name="tilesJsonDir">Level dir containing tiles.json (and images.json for asset mapping).</param>
@@ -62,53 +68,49 @@ namespace Nebula.Tools.GameDumper
             var tilesDoc = JsonSerializer.Deserialize<TilesDoc>(File.ReadAllText(Path.Combine(tilesJsonDir, "tiles.json")), JsonOpts);
             if (tilesDoc == null) throw new InvalidDataException("tiles.json is empty or invalid.");
 
-            // asset file mapping from images.json: imageHandle → (png path, size).
             var imageInfo = LoadImageMap(tilesJsonDir);
+            string assetsOut = Path.Combine(godotAbsRoot, "assets");
+            Directory.CreateDirectory(assetsOut);
+            var tileHandles = tilesDoc.Frames
+                .SelectMany(f => f.Tiles)
+                .Where(t => !t.IsBackground)
+                .Select(t => t.Image);
+            PadNonMultipleImages(imageInfo, assetsOut, tileHandles);
 
-            // Build the shared image → TileSet source mapping used by BOTH tilemap.json and tileset.tres,
-            // so the two agree on which source_id a given image/file maps to.
-            var sourceForImage = new Dictionary<uint, int>();
-            var fileToSource = new Dictionary<string, int>();
-            int nextSource = 0;
-            foreach (var handle in tilesDoc.Frames
-                         .SelectMany(f => f.Tiles)
-                         .Where(t => !t.IsBackground)
-                         .Select(t => t.Image).Distinct().OrderBy(h => h))
-            {
-                if (!imageInfo.TryGetValue(handle, out var info)) continue;
-                if (string.IsNullOrEmpty(info.File)) continue;
-                if (!fileToSource.TryGetValue(info.File, out int sid))
-                {
-                    sid = nextSource++;
-                    fileToSource[info.File] = sid;
-                }
-                sourceForImage[handle] = sid;
-            }
+            // A glued tileset/scene was the old behaviour and hid whole frames. Drop the leftovers
+            // so the output folder is only tilemap.json + frames/<name>/ + shared assets/.
+            TryDeleteFile(Path.Combine(godotAbsRoot, "tileset.tres"));
+            TryDeleteFile(Path.Combine(godotAbsRoot, "tilemap.tscn"));
 
             var result = new Result { Frames = tilesDoc.Frames.Count };
             var framesOut = new List<object?>();
-            // Every TileMap cell across all frames, merged in frame order (later frames overwrite
-            // earlier ones on the same cell, matching the old runtime set_cell order). Baked into the
-            // scene's tile_map_data so the grid shows without any script/@tool building.
-            var allCells = new Dictionary<(int cx, int cy), CellEntry>();
-            // Every StaticBody2D fragment across all frames (overlap losers + non-aligned pieces).
-            // Baked into tilemap.tscn as scene nodes so they are visible in the editor without any
-            // runtime or @tool building.
-            var allStatics = new List<object?>();
-
-            // Collect every (atlasX, atlasY) actually used within each source, so tileset.tres can
-            // register only the cells the map references.
-            var sourceAtlas = new Dictionary<int, HashSet<(int x, int y)>>();
-            // (source, atlas) → isObstacle: a tile collides if any placed cell using it is obstacle.
-            var sourceAtlasObstacle = new HashSet<(int source, int ax, int ay)>();
+            var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string framesRoot = Path.Combine(godotAbsRoot, "frames");
+            Directory.CreateDirectory(framesRoot);
 
             foreach (var frame in tilesDoc.Frames)
             {
-                // backgrounds: full-frame, emitted once, never tiled.
+                var sourceForImage = new Dictionary<uint, int>();
+                var fileToSource = new Dictionary<string, int>();
+                int nextSource = 0;
+                foreach (var handle in frame.Tiles
+                             .Where(t => !t.IsBackground)
+                             .Select(t => t.Image).Distinct().OrderBy(h => h))
+                {
+                    if (!imageInfo.TryGetValue(handle, out var info)) continue;
+                    if (string.IsNullOrEmpty(info.File)) continue;
+                    if (!fileToSource.TryGetValue(info.File, out int sid))
+                    {
+                        sid = nextSource++;
+                        fileToSource[info.File] = sid;
+                    }
+                    sourceForImage[handle] = sid;
+                }
+
+                var sourceAtlas = new Dictionary<int, HashSet<(int x, int y)>>();
+                var sourceAtlasObstacle = new HashSet<(int source, int ax, int ay)>();
                 var backgrounds = new List<object?>();
-                // cells: (cellX, cellY) -> tile info; later-in-order loses to earlier on conflict.
                 var cellMap = new Dictionary<(int cx, int cy), CellEntry>();
-                // static bodies (fragments that don't fit a 32-aligned cell).
                 var statics = new List<object?>();
 
                 foreach (var tile in frame.Tiles)
@@ -133,7 +135,11 @@ namespace Nebula.Tools.GameDumper
                         continue;
                     }
 
-                    // Split into 32x32 sub-tiles covering the original rect (clipped to it).
+                    int motifW = MotifSize(img, horizontal: true);
+                    int motifH = MotifSize(img, horizontal: false);
+                    int atlasW = img?.Width ?? 0;
+                    int atlasH = img?.Height ?? 0;
+
                     int sx = Math.Max(1, (int)Math.Ceiling(tile.W / (double)Cell));
                     int sy = Math.Max(1, (int)Math.Ceiling(tile.H / (double)Cell));
 
@@ -146,36 +152,28 @@ namespace Nebula.Tools.GameDumper
                             int subH = Math.Min(Cell, tile.Y + tile.H - subY);
                             if (subW <= 0 || subH <= 0) continue;
 
-                            // Exactly 32x32 and aligned → candidate TileMap cell.
                             bool aligned = subX % Cell == 0 && subY % Cell == 0
                                         && subW == Cell && subH == Cell;
                             int cx = subX / Cell, cy = subY / Cell;
 
-                            // Image region via motif tiling: this sub-block's offset inside the object
-                            // rect maps to the image with wrapping. (dx,dy are always non-negative here.)
                             int dx = subX - tile.X;
                             int dy = subY - tile.Y;
-                            int imgX = img != null && img.Width > 0 ? dx % img.Width : 0;
-                            int imgY = img != null && img.Height > 0 ? dy % img.Height : 0;
+                            int imgX = motifW > 0 ? dx % motifW : 0;
+                            int imgY = motifH > 0 ? dy % motifH : 0;
 
-                            // Can this sub-block be a TileMap cell? Need a full 32x32 region starting on
-                            // a 32-aligned point that still fits inside the image. The image itself must
-                            // also be a multiple of 32 on both axes: Godot's TileSetAtlasSource slices the
-                            // texture on a 32px grid, and a non-multiple texture would create an out-of-grid
-                            // tile → "Image width 0" errors. Such images fall back to StaticBody2D.
+                            // Padded atlas is a multiple of 32; motif still wraps on the original
+                            // pixels so leftover strips (63→64, 325→352) stay StaticBody2D.
                             bool tileable = aligned
                                          && img != null
-                                         && img.Width > 0 && img.Height > 0
-                                         && img.Width % Cell == 0 && img.Height % Cell == 0
+                                         && motifW > 0 && motifH > 0
+                                         && atlasW % Cell == 0 && atlasH % Cell == 0
                                          && imgX % Cell == 0 && imgY % Cell == 0
-                                         && imgX + Cell <= img.Width
-                                         && imgY + Cell <= img.Height;
+                                         && imgX + Cell <= motifW && imgY + Cell <= motifH
+                                         && imgX + Cell <= atlasW && imgY + Cell <= atlasH;
 
                             if (tileable)
                             {
                                 int atlasX = imgX / Cell, atlasY = imgY / Cell;
-                                // Overlap conflict: if the cell is already claimed, the later-in-order
-                                // tile becomes a StaticBody2D instead of overwriting the winner.
                                 if (cellMap.TryGetValue((cx, cy), out var existing))
                                 {
                                     statics.Add(BuildStatic(tile, subX, subY, subW, subH,
@@ -202,9 +200,8 @@ namespace Nebula.Tools.GameDumper
                             }
                             else
                             {
-                                // Non-tileable fragment. Region is clipped to the image bounds.
-                                int regW = img != null && img.Width > 0 ? Math.Min(subW, img.Width - imgX) : subW;
-                                int regH = img != null && img.Height > 0 ? Math.Min(subH, img.Height - imgY) : subH;
+                                int regW = motifW > 0 ? Math.Min(subW, Math.Max(0, motifW - imgX)) : subW;
+                                int regH = motifH > 0 ? Math.Min(subH, Math.Max(0, motifH - imgY)) : subH;
                                 statics.Add(BuildStatic(tile, subX, subY, subW, subH,
                                     resFile, imgX, imgY, regW, regH, conflictWith: null));
                                 result.StaticBodies++;
@@ -212,7 +209,6 @@ namespace Nebula.Tools.GameDumper
                         }
                 }
 
-                // TileMap cells sorted deterministically.
                 var cells = cellMap.Values
                     .OrderBy(c => c.Y).ThenBy(c => c.X)
                     .Select(c => (object)new Dictionary<string, object?>
@@ -225,16 +221,20 @@ namespace Nebula.Tools.GameDumper
                         ["object"] = c.Object, ["layer"] = c.Layer, ["order"] = c.Order,
                     }).ToList();
 
-                // Merge this frame's cells into the baked scene data (later frames win the cell).
-                foreach (var c in cellMap.Values)
-                    allCells[(c.X, c.Y)] = c;
-                // Fragments (overlap losers + non-aligned pieces) are baked as scene nodes too.
-                allStatics.AddRange(statics);
+                string safe = UniqueFrameDir(frame.Name, frame.Handle, usedNames);
+                string frameDir = Path.Combine(framesRoot, safe);
+                Directory.CreateDirectory(frameDir);
+                string frameRes = godotResPath + "/frames/" + safe;
+                var oneFrameDoc = new TilesDoc { App = tilesDoc.App, Frames = new List<FrameTiles> { frame } };
+                WriteTileset(frameDir, godotResPath, imageInfo, sourceForImage, sourceAtlas, sourceAtlasObstacle, oneFrameDoc, assetsOut);
+                WriteScene(frameDir, frameRes, cellMap.Values, statics);
+                result.FrameScenes++;
 
                 framesOut.Add(new Dictionary<string, object?>
                 {
                     ["name"] = frame.Name, ["handle"] = frame.Handle,
                     ["width"] = frame.Width, ["height"] = frame.Height,
+                    ["dir"] = "frames/" + safe,
                     ["backgrounds"] = backgrounds,
                     ["cells"] = cells,
                     ["staticBodies"] = statics,
@@ -245,13 +245,11 @@ namespace Nebula.Tools.GameDumper
             {
                 ["app"] = tilesDoc.App,
                 ["cellSize"] = Cell,
+                ["layout"] = "per-frame",
                 ["frames"] = framesOut,
             };
             File.WriteAllText(Path.Combine(godotAbsRoot, "tilemap.json"),
                 JsonSerializer.Serialize(doc, JsonOptsIndented));
-
-            WriteTileset(godotAbsRoot, godotResPath, imageInfo, sourceForImage, sourceAtlas, sourceAtlasObstacle, tilesDoc);
-            WriteScene(godotAbsRoot, godotResPath, allCells.Values, allStatics);
 
             return result;
         }
@@ -274,11 +272,89 @@ namespace Nebula.Tools.GameDumper
                         info.File = Path.GetFullPath(Path.Combine(tilesJsonDir, f.GetString() ?? ""));
                     if (prop.Value.TryGetProperty("width", out var w)) info.Width = w.GetInt32();
                     if (prop.Value.TryGetProperty("height", out var h)) info.Height = h.GetInt32();
+                    info.OrigWidth = info.Width;
+                    info.OrigHeight = info.Height;
                     map[handle] = info;
                 }
             }
             catch { /* best-effort */ }
             return map;
+        }
+
+        static int MotifSize(ImageInfo? img, bool horizontal)
+        {
+            if (img == null) return 0;
+            if (horizontal)
+                return img.OrigWidth > 0 ? img.OrigWidth : img.Width;
+            return img.OrigHeight > 0 ? img.OrigHeight : img.Height;
+        }
+
+        static int Ceil32(int v) => v <= 0 ? 0 : ((v + Cell - 1) / Cell) * Cell;
+
+        static void PadNonMultipleImages(Dictionary<uint, ImageInfo> imageInfo, string assetsOut, IEnumerable<uint> tileHandles)
+        {
+            var needed = new HashSet<uint>(tileHandles);
+            var paddedByFile = new Dictionary<string, (string path, int w, int h)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var info in imageInfo.Values)
+            {
+                if (!needed.Contains(info.Handle)) continue;
+                if (string.IsNullOrEmpty(info.File) || !File.Exists(info.File)) continue;
+                int pw = Ceil32(info.OrigWidth > 0 ? info.OrigWidth : info.Width);
+                int ph = Ceil32(info.OrigHeight > 0 ? info.OrigHeight : info.Height);
+                if (pw <= 0 || ph <= 0) continue;
+                if (pw == info.Width && ph == info.Height) continue;
+
+                if (!paddedByFile.TryGetValue(info.File, out var padded))
+                {
+                    string dest = Path.Combine(assetsOut,
+                        Path.GetFileNameWithoutExtension(info.File) + "_pad32.png");
+                    try
+                    {
+                        using var src = new Bitmap(info.File);
+                        using var dst = new Bitmap(pw, ph, PixelFormat.Format32bppArgb);
+                        using (var g = Graphics.FromImage(dst))
+                        {
+                            g.Clear(Color.Transparent);
+                            g.DrawImageUnscaled(src, 0, 0);
+                        }
+                        dst.Save(dest, ImageFormat.Png);
+                        padded = (dest, pw, ph);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                    paddedByFile[info.File] = padded;
+                }
+                info.File = padded.path;
+                info.Width = padded.w;
+                info.Height = padded.h;
+            }
+        }
+
+        static string UniqueFrameDir(string name, int handle, HashSet<string> used)
+        {
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new StringBuilder(name.Length);
+            foreach (char c in name)
+                sb.Append(invalid.Contains(c) || char.IsControl(c) ? '_' : c);
+            string baseName = sb.ToString().Trim();
+            if (string.IsNullOrEmpty(baseName)) baseName = "frame_" + handle;
+            string safe = baseName;
+            if (!used.Add(safe))
+            {
+                safe = baseName + "_" + handle;
+                int i = 2;
+                while (!used.Add(safe))
+                    safe = baseName + "_" + handle + "_" + i++;
+            }
+            return safe;
+        }
+
+        static void TryDeleteFile(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); }
+            catch { /* leftover from a previous glued export */ }
         }
 
         static Dictionary<string, object?> BuildStatic(TileJson tile, int x, int y, int w, int h,
@@ -307,45 +383,45 @@ namespace Nebula.Tools.GameDumper
             Dictionary<uint, ImageInfo> imageInfo, Dictionary<uint, int> sourceForImage,
             Dictionary<int, HashSet<(int x, int y)>> sourceAtlas,
             HashSet<(int source, int ax, int ay)> sourceAtlasObstacle,
-            TilesDoc doc)
+            TilesDoc doc, string assetsCopyRoot)
         {
             // Rebuild the distinct file → source list, preserving the same ids as sourceForImage.
-            // Only sources that actually contribute at least one atlas cell are registered: images that
-            // were rejected by the tileability check (e.g. not a multiple of 32) never produce cells,
-            // and must not become TileSetAtlasSource textures (Godot would error on the out-of-grid tile).
+            // Only sources that actually contribute at least one atlas cell are registered.
             var sources = new List<(int id, string file)>();
+            var seenIds = new HashSet<int>();
             foreach (var kv in sourceForImage.OrderBy(kv => kv.Value))
             {
                 if (!imageInfo.TryGetValue(kv.Key, out var info)) continue;
                 if (string.IsNullOrEmpty(info.File)) continue;
                 if (!sourceAtlas.ContainsKey(kv.Value)) continue;
+                if (!seenIds.Add(kv.Value)) continue;
                 sources.Add((kv.Value, info.File));
             }
-            sources = sources.Distinct().ToList();
 
-            // Copy EVERY referenced image (tile sources + background images) into godotAbsRoot/assets so
-            // the res:// references in tileset.tres / tilemap.json resolve inside the Godot project.
-            // Backgrounds are not TileSet sources but still need their PNG present for Sprite2D loading.
             var copyFiles = sources.Select(s => s.file).ToHashSet();
             foreach (var bg in doc.Frames.SelectMany(f => f.Tiles).Where(t => t.IsBackground))
             {
                 if (imageInfo.TryGetValue(bg.Image, out var bi) && !string.IsNullOrEmpty(bi.File))
                     copyFiles.Add(bi.File);
             }
+            Directory.CreateDirectory(assetsCopyRoot);
             foreach (var file in copyFiles)
             {
                 try
                 {
-                    string dstDir = Path.Combine(godotAbsRoot, "assets");
-                    Directory.CreateDirectory(dstDir);
-                    string dst = Path.Combine(dstDir, Path.GetFileName(file));
+                    string dst = Path.Combine(assetsCopyRoot, Path.GetFileName(file));
                     if (File.Exists(file) && !File.Exists(dst))
                         File.Copy(file, dst, overwrite: false);
                 }
                 catch { /* best-effort asset copy */ }
             }
 
-            if (sources.Count == 0) return; // nothing to tile
+            if (sources.Count == 0)
+            {
+                File.WriteAllText(Path.Combine(godotAbsRoot, "tileset.tres"),
+                    "[gd_resource type=\"TileSet\" format=3]\n\n[resource]\ntile_size = Vector2i(32, 32)\n");
+                return;
+            }
 
             var sb = new StringBuilder();
             sb.AppendLine("[gd_resource type=\"TileSet\" format=3]");

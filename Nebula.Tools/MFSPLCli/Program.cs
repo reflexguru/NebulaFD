@@ -17,6 +17,7 @@ string godotTilesRes = "res://mfspl/stage_ctf";
 bool tilesOnly = false;
 bool archive = false;
 bool layersOnly = false;
+bool irOnly = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -50,6 +51,9 @@ for (int i = 0; i < args.Length; i++)
         case "--layers-only":
             layersOnly = true;
             break;
+        case "--ir-only":
+            irOnly = true;
+            break;
         case "-h":
         case "--help":
             Console.WriteLine("Usage: mfspL-cli <mfa-file-or-dir> [-o <output-dir>] [--godot <dir> [--godot-res <resPath>]] [--tiles-godot <dir> [--tiles-godot-res <resPath>]]");
@@ -59,11 +63,12 @@ for (int i = 0; i < args.Length; i++)
             Console.WriteLine("  --godot <dir>          emit Godot SpriteFrames .tres into <dir> (absolute path).");
             Console.WriteLine("  --godot-res <p>        res:// prefix for SpriteFrames (default res://mfspl/sprite/ctf).");
             Console.WriteLine("  --godot-only           skip MFA parsing; re-emit Godot SpriteFrames from existing -o/sprites.");
-            Console.WriteLine("  --tiles-godot <dir>    emit Godot tile data (tilemap.json/tileset.tres) into <dir>.");
+            Console.WriteLine("  --tiles-godot <dir>    emit per-frame Godot tilemaps into <dir>/<mfa>/frames/<frame>/.");
             Console.WriteLine("  --tiles-godot-res <p>  res:// prefix for tile assets (default res://mfspl/stage_ctf).");
             Console.WriteLine("  --tiles-only           skip MFA parsing; re-emit Godot tile data from existing -o tiles.json.");
             Console.WriteLine("  --archive              archive shared vs per-level assets (images + sprites) into -o; copies only, idempotent.");
     Console.WriteLine("  --layers-only          only emit layers.json (layer names + scroll coefficients) from the MFA sources.");
+            Console.WriteLine("  --ir-only              objects.json + events.json + tiles.json + layers.json (no assets/sprites).");
             return 0;
         default:
             input ??= args[i];
@@ -107,7 +112,7 @@ if (tilesOnly)
             var tres = GodotTileExporter.Export(d, dst, godotTilesRes + "/" + Path.GetFileName(d));
             cells += tres.CellTiles; statics += tres.StaticBodies;
             backgrounds += tres.Backgrounds; conflicts += tres.Conflicts;
-            Console.WriteLine($"  tile→ {Path.GetFileName(d)}: {tres.Frames} frames, {tres.CellTiles} cells, {tres.StaticBodies} statics, {tres.Conflicts} conflicts");
+            Console.WriteLine($"  tile→ {Path.GetFileName(d)}: {tres.FrameScenes} frame scenes, {tres.CellTiles} cells, {tres.StaticBodies} statics, {tres.Conflicts} conflicts");
             tOk++;
         }
         catch (Exception ex) { Console.WriteLine($"  tile FAILED {Path.GetFileName(d)}: {ex.Message}"); tFail++; }
@@ -181,23 +186,30 @@ for (int i = 0; i < files.Count; i++)
         }
 
         var result = MFSPLExporter.Export(mfa, outDir);
-        var assets = MFSPLExporter.ExportAssets(mfa, outDir, assetDir, imagePool, soundPool);
-        var sprites = MFSPLExporter.ExportSpritesheets(mfa, spritesDir, sheetIndex);
-        totalSheets += sprites.Sheets;
-        totalSkipped += sprites.Skipped;
         var tiles = MFSPLExporter.ExportTiles(mfa, outDir);
         totalTiles += tiles.Tiles;
         var layers = MFSPLExporter.ExportLayers(mfa, outDir);
         totalLayers += layers.Layers;
+        if (irOnly)
+        {
+            Console.WriteLine($"[{i + 1}/{files.Count}] {name} OK — frames={result.Frames}, objects={result.Objects}, tiles={tiles.Tiles}, layers={layers.Layers} (ir-only)");
+            ok++;
+            continue;
+        }
+        var assets = MFSPLExporter.ExportAssets(mfa, outDir, assetDir, imagePool, soundPool);
+        var sprites = MFSPLExporter.ExportSpritesheets(mfa, spritesDir, sheetIndex);
+        totalSheets += sprites.Sheets;
+        totalSkipped += sprites.Skipped;
 
         Console.WriteLine($"[{i + 1}/{files.Count}] {name} OK — frames={result.Frames}, objects={result.Objects}, images={assets.Images} (+{assets.ImageDuplicates} dup), sounds={assets.Sounds} (+{assets.SoundDuplicates} dup), sheets={sprites.Sheets} (+{sprites.Skipped} dup), tiles={tiles.Tiles}, layers={layers.Layers}");
         ok++;
     }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[{i + 1}/{files.Count}] {name} FAILED — {ex.Message}");
-        fail++;
-    }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[{i + 1}/{files.Count}] {name} FAILED — {ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine(ex.StackTrace);
+            fail++;
+        }
     finally
     {
         GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
@@ -209,6 +221,13 @@ for (int i = 0; i < files.Count; i++)
 if (layersOnly)
 {
     Console.WriteLine($"Done (layers only). OK={ok}, FAILED={fail}. Layers → per-level layers.json");
+    return fail == 0 ? 0 : 3;
+}
+
+if (irOnly)
+{
+    Console.WriteLine($"Done (ir-only). OK={ok}, FAILED={fail}. JSON → {outputRoot}");
+    Console.WriteLine($"Tiles: {totalTiles} backdrop rects; Layers: {totalLayers}");
     return fail == 0 ? 0 : 3;
 }
 
@@ -241,7 +260,7 @@ if (godotTilesAbs != null)
             var tres = GodotTileExporter.Export(d, dst, godotTilesRes + "/" + Path.GetFileName(d));
             cells += tres.CellTiles; statics += tres.StaticBodies;
             backgrounds += tres.Backgrounds; conflicts += tres.Conflicts;
-            Console.WriteLine($"  tile→ {Path.GetFileName(d)}: {tres.Frames} frames, {tres.CellTiles} cells, {tres.StaticBodies} statics, {tres.Conflicts} conflicts");
+            Console.WriteLine($"  tile→ {Path.GetFileName(d)}: {tres.FrameScenes} frame scenes, {tres.CellTiles} cells, {tres.StaticBodies} statics, {tres.Conflicts} conflicts");
             tOk++;
         }
         catch (Exception ex) { Console.WriteLine($"  tile FAILED {Path.GetFileName(d)}: {ex.Message}"); tFail++; }

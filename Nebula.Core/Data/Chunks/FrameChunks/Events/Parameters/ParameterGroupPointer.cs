@@ -1,4 +1,5 @@
-﻿﻿using Nebula.Core.Memory;
+﻿using Nebula.Core.Data.Chunks.FrameChunks;
+using Nebula.Core.Memory;
 using System.Drawing;
 
 namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
@@ -39,8 +40,19 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 
         public override string ToString()
         {
-            string? name = Parent?.FrameEvents?.Parent?.GroupLookupTable[(short)ID].Name;
-            return name == null ? "Unknown Group" : name;
+            Frame? frame = Parent?.FrameEvents?.Parent;
+            if (frame != null)
+            {
+                if (ID >= short.MinValue && ID <= short.MaxValue &&
+                    frame.GroupLookupTable.TryGetValue((short)ID, out ParameterGroup? group))
+                    return group.Name;
+
+                foreach (EventGroup eg in frame.FrameEvents.EventGroups)
+                    if (eg.Handle == ID)
+                        return eg.Name;
+            }
+
+            return $"Group {ID}";
         }
     }
 }
