@@ -4,6 +4,7 @@ using Nebula.Core.Data.Chunks.ObjectChunks.ObjectCommon;
 using Nebula.Core.Memory;
 using System.Diagnostics;
 using System.Globalization;
+using ACEBase = Nebula.Core.Data.Chunks.FrameChunks.Events.ACEventBase;
 
 namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 {
@@ -454,6 +455,8 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
                             switch (ObjectType)
                             {
                                 default:
+                                    if (ACEBase.TryFormatExtensionExpression(ObjectType, Num, GetObjectName(), out string extExpr))
+                                        return extExpr;
                                     return $"Expression ID {Num}(\"{GetObjectName()}\")";
                             }
                         case 1:

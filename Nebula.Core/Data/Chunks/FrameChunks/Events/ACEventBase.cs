@@ -685,6 +685,13 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
             return dot > 0 ? fileName[..dot] : fileName;
         }
 
+        protected string AceParam(int index)
+        {
+            if (index < 0 || index >= Parameters.Length || Parameters[index] == null)
+                return "?";
+            return Parameters[index].ToString();
+        }
+
         public bool TryFormatExtensionAction(string header, out string text)
         {
             text = string.Empty;
@@ -696,19 +703,52 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                     switch (Num)
                     {
                         case 81:
-                            text = header + "Start timer " + Parameters[0];
+                            text = header + "Start timer " + AceParam(0);
                             return true;
                         case 82:
-                            text = header + "Pause timer " + Parameters[0];
+                            text = header + "Pause timer " + AceParam(0);
                             return true;
                         case 83:
-                            text = header + "Resume timer " + Parameters[0];
+                            text = header + "Resume timer " + AceParam(0);
                             return true;
                         case 84:
-                            text = header + "Reset timer " + Parameters[0];
+                            text = header + "Reset timer " + AceParam(0);
                             return true;
                         case 85:
-                            text = header + "Stop timer " + Parameters[0];
+                            text = header + "Stop timer " + AceParam(0);
+                            return true;
+                        default:
+                            return false;
+                    }
+                case "foreach":
+                    switch (Num)
+                    {
+                        case 80:
+                            text = header + "Start for each loop: " + AceParam(0) + " for object " + AceParam(1);
+                            return true;
+                        case 81:
+                            text = header + "Start for each loop: " + AceParam(0) + " for group " + AceParam(1);
+                            return true;
+                        case 82:
+                            text = header + "Start for each loop: " + AceParam(0) + " for fixed value " + AceParam(1);
+                            return true;
+                        case 83:
+                            text = header + "Set loop index of " + AceParam(0) + " to " + AceParam(1);
+                            return true;
+                        case 84:
+                            text = header + "Pause loop " + AceParam(0);
+                            return true;
+                        case 85:
+                            text = header + "Resume loop " + AceParam(0);
+                            return true;
+                        case 86:
+                            text = header + "Stop loop " + AceParam(0);
+                            return true;
+                        case 87:
+                            text = header + "Add " + AceParam(0) + " to group " + AceParam(1);
+                            return true;
+                        case 88:
+                            text = header + "Remove " + AceParam(0) + " from group " + AceParam(1);
                             return true;
                         default:
                             return false;
@@ -730,10 +770,34 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                     switch (Num)
                     {
                         case -88:
-                            text = $"{obj}: Timer {Parameters[0]} is equal to {FormatMs(Parameters[1].ToString())}";
+                            text = $"{obj}: Timer {AceParam(0)} is equal to {FormatMs(AceParam(1))}";
                             return true;
                         case -91:
                             text = $"{obj}: The application is paused";
+                            return true;
+                        default:
+                            return false;
+                    }
+                case "foreach":
+                    switch (Num)
+                    {
+                        case -80:
+                            text = $"{obj}: On foreach loop: {AceParam(0)}";
+                            return true;
+                        case -81:
+                            text = $"{obj}: On foreach loop: {AceParam(0)} for group {AceParam(1)}";
+                            return true;
+                        case -82:
+                            text = $"{obj}: On foreach loop: {AceParam(0)} for fixed value {AceParam(1)}";
+                            return true;
+                        case -83:
+                            text = $"{obj}: Loop index of {AceParam(0)} {LoopIndexComparison()} {AceParam(1)}";
+                            return true;
+                        case -84:
+                            text = $"{obj}: Loop {AceParam(0)} is paused";
+                            return true;
+                        case -85:
+                            text = $"{obj}: On foreach loop: {AceParam(0)} for object {AceParam(1)}";
                             return true;
                         default:
                             return false;
@@ -743,9 +807,43 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
             }
         }
 
+        public static bool TryFormatExtensionExpression(int objectType, short num, string objectName, out string text)
+        {
+            text = string.Empty;
+            if (objectType < 32)
+                return false;
+            switch (Stem(GetExtensionFileName(objectType)).ToLowerInvariant())
+            {
+                case "foreach":
+                    switch (num)
+                    {
+                        case 80:
+                            text = $"LoopIndex(\"{objectName}\", ";
+                            return true;
+                        case 81:
+                            text = $"LoopName$(\"{objectName}\")";
+                            return true;
+                        case 82:
+                            text = $"NObjects(\"{objectName}\", ";
+                            return true;
+                        default:
+                            return false;
+                    }
+                default:
+                    return false;
+            }
+        }
+
+        string LoopIndexComparison()
+        {
+            if (Parameters.Length > 1 && Parameters[1].Data is ParameterExpressions pex)
+                return GetComparison(pex.Comparison);
+            return "=";
+        }
+
         static string FormatMs(string value)
         {
-            if (string.IsNullOrEmpty(value))
+            if (string.IsNullOrEmpty(value) || value == "?")
                 return "ms";
             bool numeric = true;
             for (int i = 0; i < value.Length; i++)
