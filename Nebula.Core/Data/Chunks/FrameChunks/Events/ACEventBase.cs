@@ -1,10 +1,11 @@
-﻿using Nebula.Core.Data.Chunks.AppChunks;
+using Nebula.Core.Data.Chunks.AppChunks;
 using Nebula.Core.Data.Chunks.FrameChunks;
 using Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters;
 using Nebula.Core.Data.Chunks.ObjectChunks.ObjectCommon;
 using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Memory;
 using Nebula.Core.Utilities;
+using System.Globalization;
 
 namespace Nebula.Core.Data.Chunks.FrameChunks.Events
 {
@@ -279,13 +280,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
 
         public string GetObjectName()
         {
-            string resolved = Parent?.Parent?.ResolveObjectName(ObjectInfo, ObjectType) ?? "Unknown Object";
-            if (resolved != "Unknown Object")
-                return resolved;
-            Qualifier[] qualifier = Parent?.Parent?.Qualifiers.Where(x => x.ObjectInfo == ObjectInfo && x.Type == ObjectType).ToArray()!;
-            if (qualifier.Length > 0)
-                return GetQualifierName(qualifier.First());
-            return "Unknown Object";
+            return Parent?.Parent?.ResolveObjectName(ObjectInfo, ObjectType) ?? "Unknown Object";
         }
 
         public string GetQualifierName(Qualifier qualifier)
@@ -418,38 +413,61 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                 return qualifierName;
         }
 
-        public string GetDirection(ParameterChunk param)
+        public enum DirectionMaskStyle
+        {
+            List,
+            Pick,
+            Test
+        }
+
+        public static List<int> GetDirectionIndices(uint mask)
+        {
+            var indices = new List<int>(32);
+            for (int i = 0; i < 32; i++)
+            {
+                if ((mask & (1u << i)) != 0)
+                    indices.Add(i);
+            }
+            return indices;
+        }
+
+        public static double DirectionToDegrees(int dir)
+        {
+            // Fusion dirs run counterclockwise from the right; dump uses clockwise
+            // screen angles: right 0°, down 90°, left 180°, up 270°.
+            return (32 - (dir & 31)) % 32 * 11.25;
+        }
+
+        public static string FormatDirectionDegrees(int dir)
+        {
+            return DirectionToDegrees(dir).ToString("0.##", CultureInfo.InvariantCulture) + "°";
+        }
+
+        public static string FormatDirectionMask(uint mask, DirectionMaskStyle style = DirectionMaskStyle.List)
+        {
+            if (mask == 0)
+                return "no directions selected";
+            if (mask == uint.MaxValue)
+                return "any direction";
+
+            List<int> indices = GetDirectionIndices(mask);
+            string list = string.Join(", ", indices.Select(FormatDirectionDegrees));
+            if (indices.Count <= 1)
+                return list;
+
+            return style switch
+            {
+                DirectionMaskStyle.Pick => list + " at random",
+                DirectionMaskStyle.Test => "any of " + list,
+                _ => list
+            };
+        }
+
+        public string GetDirection(ParameterChunk param, DirectionMaskStyle style = DirectionMaskStyle.Pick)
         {
             if (param is ParameterInt p)
-            {
-                string output = "...........";
-                BitDict dict = new BitDict();
-                dict.Value = (uint)p.Value;
-                if (dict.Value == uint.MaxValue)
-                    output += ".";
-                else if (dict["31"])
-                    output += "..........";
-                else if (dict["30"])
-                    output += ".........";
-                else if (dict["29"] || dict["28"] || dict["27"])
-                    output += "........";
-                else if (dict["26"] || dict["25"] || dict["24"])
-                    output += ".......";
-                else if (dict["20"] || dict["21"] || dict["22"] || dict["23"])
-                    output += "......";
-                else if (dict["17"] || dict["18"] || dict["19"])
-                    output += ".....";
-                else if (dict["14"] || dict["15"] || dict["16"])
-                    output += "....";
-                else if (dict["10"] || dict["11"] || dict["12"] || dict["13"])
-                    output += "...";
-                else if (dict["7"] || dict["8"] || dict["9"])
-                    output += "..";
-                else if (dict["4"] || dict["5"] || dict["6"])
-                    output += ".";
-                return output;
-            }
-            else return param.ToString();
+                return FormatDirectionMask((uint)p.Value, style);
+            return param.ToString();
         }
 
         public string GetObjectAnimation(short id)

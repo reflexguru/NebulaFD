@@ -1,4 +1,4 @@
-﻿using Nebula.Core.Data.Chunks.FrameChunks;
+using Nebula.Core.Data.Chunks.FrameChunks;
 using Nebula.Core.Data.Chunks.FrameChunks.Events;
 using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Memory;
@@ -76,19 +76,28 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
         string ResolveShootObjectName()
         {
             FrameEvents? fe = Parent?.FrameEvents;
-            Frame? frame = fe?.Parent;
-            if (frame?.FrameObjectItems.TryGetValue(ObjectInfo, out ObjectInfo? localOi) == true && localOi != null)
-                return localOi.Name;
-            if (fe != null && fe.EventObjects.TryGetValue(ObjectInfo, out EventObject? eo) && eo.ObjectType == 1)
+            if (fe != null)
             {
-                int handle = (int)eo.ItemHandle;
-                if (frame?.FrameObjectItems.TryGetValue(handle, out localOi) == true && localOi != null)
-                    return localOi.Name;
-                if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out localOi))
-                    return localOi.Name;
+                if (fe.EventObjects.TryGetValue(ObjectInfo, out EventObject? eo))
+                {
+                    if (eo.ObjectType == 1)
+                    {
+                        int handle = (int)eo.ItemHandle;
+                        Frame? frame = fe.Parent;
+                        if (frame?.FrameObjectItems.TryGetValue(handle, out ObjectInfo? localOi) == true && localOi != null)
+                            return localOi.Name;
+                        if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out localOi) && localOi != null)
+                            return localOi.Name;
+                    }
+                    if (!string.IsNullOrEmpty(eo.Name))
+                        return eo.Name;
+                }
+                ObjectInfo? resolved = fe.ResolveObject(ObjectInfo);
+                if (resolved != null && !string.IsNullOrEmpty(resolved.Name))
+                    return resolved.Name;
             }
-            if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(ObjectInfo, out localOi))
-                return localOi.Name;
+            if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(ObjectInfo, out ObjectInfo? fallbackOi) && fallbackOi != null)
+                return fallbackOi.Name;
             return "Unknown Object";
         }
 
@@ -102,32 +111,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 
         public string GetDirection()
         {
-            string output = "...........";
-            BitDict dict = new BitDict();
-            dict.Value = (uint)Direction;
-            if (dict.Value == uint.MaxValue)
-                output += ".";
-            else if (dict["31"])
-                output += "..........";
-            else if (dict["30"])
-                output += ".........";
-            else if (dict["29"] || dict["28"] || dict["27"])
-                output += "........";
-            else if (dict["26"] || dict["25"] || dict["24"])
-                output += ".......";
-            else if (dict["20"] || dict["21"] || dict["22"] || dict["23"])
-                output += "......";
-            else if (dict["17"] || dict["18"] || dict["19"])
-                output += ".....";
-            else if (dict["14"] || dict["15"] || dict["16"])
-                output += "....";
-            else if (dict["10"] || dict["11"] || dict["12"] || dict["13"])
-                output += "...";
-            else if (dict["7"] || dict["8"] || dict["9"])
-                output += "..";
-            else if (dict["4"] || dict["5"] || dict["6"])
-                output += ".";
-            return output;
+            return ACEventBase.FormatDirectionMask((uint)Direction, ACEventBase.DirectionMaskStyle.Pick);
         }
     }
 }

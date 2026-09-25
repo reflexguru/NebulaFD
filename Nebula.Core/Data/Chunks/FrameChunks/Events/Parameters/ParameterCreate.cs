@@ -1,4 +1,4 @@
-﻿using Nebula.Core.Data.Chunks.FrameChunks;
+using Nebula.Core.Data.Chunks.FrameChunks;
 using Nebula.Core.Data.Chunks.FrameChunks.Events;
 using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Memory;
@@ -77,19 +77,28 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
         string ResolveCreateObjectName(ushort objectInfo)
         {
             FrameEvents? fe = Parent?.FrameEvents;
-            Frame? frame = fe?.Parent;
-            if (frame?.FrameObjectItems.TryGetValue(objectInfo, out ObjectInfo? localOi) == true && localOi != null)
-                return localOi.Name;
-            if (fe != null && fe.EventObjects.TryGetValue(objectInfo, out EventObject? eo) && eo.ObjectType == 1)
+            if (fe != null)
             {
-                int handle = (int)eo.ItemHandle;
-                if (frame?.FrameObjectItems.TryGetValue(handle, out localOi) == true && localOi != null)
-                    return localOi.Name;
-                if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out localOi))
-                    return localOi.Name;
+                if (fe.EventObjects.TryGetValue(objectInfo, out EventObject? eo))
+                {
+                    if (eo.ObjectType == 1)
+                    {
+                        int handle = (int)eo.ItemHandle;
+                        Frame? frame = fe.Parent;
+                        if (frame?.FrameObjectItems.TryGetValue(handle, out ObjectInfo? localOi) == true && localOi != null)
+                            return localOi.Name;
+                        if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out localOi) && localOi != null)
+                            return localOi.Name;
+                    }
+                    if (!string.IsNullOrEmpty(eo.Name))
+                        return eo.Name;
+                }
+                ObjectInfo? resolved = fe.ResolveObject(objectInfo);
+                if (resolved != null && !string.IsNullOrEmpty(resolved.Name))
+                    return resolved.Name;
             }
-            if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(objectInfo, out localOi))
-                return localOi.Name;
+            if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(objectInfo, out ObjectInfo? fallbackOi) && fallbackOi != null)
+                return fallbackOi.Name;
             return "Unknown Object";
         }
 

@@ -1,4 +1,4 @@
-﻿using Nebula.Core.Data.Chunks.AppChunks;
+using Nebula.Core.Data.Chunks.AppChunks;
 using Nebula.Core.Data.Chunks.FrameChunks;
 using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Memory;
@@ -98,13 +98,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 
         public string GetObjectName()
         {
-            ObjectInfo? objectInfo = GetObject();
-            if (objectInfo != null)
-                return objectInfo.Name;
-            Qualifier[] qualifier = Parent?.FrameEvents?.Qualifiers.Where(x => x.ObjectInfo == ObjectInfoParent && x.Type == TypeParent).ToArray()!;
-            if (qualifier.Length > 0)
-                return GetQualifierName(qualifier.First());
-            return "Unknown Object";
+            return Parent?.FrameEvents?.ResolveObjectName(ObjectInfoParent, TypeParent) ?? "Unknown Object";
         }
 
         public string GetQualifierName(Qualifier qualifier)

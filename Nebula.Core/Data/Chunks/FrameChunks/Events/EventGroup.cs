@@ -1,4 +1,4 @@
-﻿using Nebula.Core.Memory;
+using Nebula.Core.Memory;
 
 namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 {
@@ -21,7 +21,8 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
         public override void ReadMFA(ByteReader reader, params object[] extraInfo)
         {
             Handle = reader.ReadShort();
-            Name = reader.ReadAutoYuniversal();
+            // MFA stores a null-terminated name, not an AutoYuniversal (length-prefixed) string.
+            Name = reader.ReadYuniversal();
             UUID = reader.ReadYunicodeStop(75);
         }
 

@@ -1,4 +1,4 @@
-﻿using Nebula;
+using Nebula;
 using Nebula.Core.Data.Chunks.AppChunks;
 using Nebula.Core.Data.Chunks.FrameChunks.Events;
 using Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters;
@@ -149,11 +149,14 @@ namespace Nebula.Core.Data.Chunks.FrameChunks
                     long endPosition = reader.Tell() + reader.ReadInt();
                     while (reader.Tell() < endPosition)
                     {
+                        if (endPosition - reader.Tell() < 2 || reader.PeekShort() == 0)
+                            break;
                         Event newEvent = new Event();
                         newEvent.Parent = this;
                         newEvent.ReadMFA(reader);
                         Events.Add(newEvent);
                     }
+                    reader.Seek(endPosition);
                 }
                 else if (identifier == "Rems" || identifier == "SMER")
                 {
@@ -172,6 +175,23 @@ namespace Nebula.Core.Data.Chunks.FrameChunks
                     {
                         EventGroups[i] = new EventGroup();
                         EventGroups[i].ReadMFA(reader);
+                    }
+
+                    // Last group's UUID is a 75-wchar slot; MFA can omit the
+                    // final 2 bytes when TYAL follows immediately.
+                    if (reader.HasMemory(4))
+                    {
+                        long tagPos = reader.Tell();
+                        string next = reader.ReadAscii(4);
+                        reader.Seek(tagPos);
+                        if (!IsMfaEventTag(next) && tagPos >= 2)
+                        {
+                            reader.Seek(tagPos - 2);
+                            next = reader.ReadAscii(4);
+                            reader.Seek(tagPos - 2);
+                            if (!IsMfaEventTag(next))
+                                reader.Seek(tagPos);
+                        }
                     }
                 }
                 else if (identifier == "EvOb" || identifier == "SJBO")
@@ -544,5 +564,10 @@ namespace Nebula.Core.Data.Chunks.FrameChunks
                 return "Unknown Qualifier";
             return qualifierName;
         }
+
+        static bool IsMfaEventTag(string tag) =>
+            tag is "Evts" or "STVE" or "Rems" or "SMER" or "SPRG"
+                or "EvOb" or "SJBO" or "EvCs" or "EvEd" or "EvTs" or "EvLs"
+                or "E2Ts" or "TYAL" or "!DNE";
     }
 }

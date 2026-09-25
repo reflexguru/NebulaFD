@@ -91,7 +91,9 @@ namespace Nebula.Core.Memory
 
         public override double ReadDouble()
         {
-            if (!NebulaCore.Windows)
+            // Android/HTML CCN packs doubles as a 64-bit fixed point (value * 2^32).
+            // MFA and Windows EXE store IEEE-754 doubles.
+            if (!NebulaCore.Windows && !NebulaCore.MFA)
                 return ReadLong() / 4294967296.0;
             return base.ReadDouble();
         }

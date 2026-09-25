@@ -1,4 +1,4 @@
-﻿using Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters;
+using Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters;
 using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Data.Chunks.ObjectChunks.ObjectCommon;
 using Nebula.Core.Memory;
@@ -643,7 +643,14 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                                 return $"Start of group \"{grp.Name}\"";
                             return $"Start of group \"{Parameters[0]}\"";
                         case -9:
-                            return Parameters.Length > 0 ? $"Child event ({Parameters[0]})" : "Child event";
+                            if (Parameters.Length > 0 && Parameters[0].Data is ParameterChildEvent)
+                                return Parameters.Length > 0 ? $"Child event ({Parameters[0]})" : "Child event";
+                            if (Parameters.Length > 0 && Parameters[0].Data is ParameterRemark remark)
+                            {
+                                string remarkText = remark.ResolveText();
+                                return string.IsNullOrEmpty(remarkText) ? "Comment" : $"Comment: {remarkText}";
+                            }
+                            return Parameters.Length > 0 ? $"Comment: {Parameters[0]}" : "Comment";
                         case -8:
                             return $"{GetGlobalValueName(Parameters[0].Data)} {GetComparison(((ParameterExpressions)Parameters[1].Data).Comparison)} {Parameters[1]}";
                         case -7:
@@ -784,7 +791,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                         case -9:
                             return $"{GetObjectName()} is in the play area";
                         case -8:
-                            return $"{GetObjectName()} is facing a direction {GetDirection(Parameters[0].Data)}";
+                            return $"{GetObjectName()} is facing a direction {GetDirection(Parameters[0].Data, ACEventBase.DirectionMaskStyle.Test)}";
                         case -7:
                             return $"{GetObjectName()} is stopped";
                         case -6:

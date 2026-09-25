@@ -3,6 +3,7 @@ using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Data.Chunks.ObjectChunks.ObjectCommon;
 using Nebula.Core.Memory;
 using System.Diagnostics;
+using System.Globalization;
 
 namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 {
@@ -290,7 +291,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
                         case 22:
                             return "Len(";
                         case 23:
-                            return ((ExpressionDouble)Expression).Value.ToString();
+                            return ((ExpressionDouble)Expression).Value.ToString("0.#####", CultureInfo.InvariantCulture);
                         case 24:
                             return GetGlobalValueName();
                         case 28:
@@ -603,13 +604,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 
         public string GetObjectName()
         {
-            ObjectInfo? objectInfo = GetObject();
-            if (objectInfo != null)
-                return objectInfo.Name;
-            Qualifier[] qualifier = Parent?.FrameEvents?.Qualifiers.Where(x => x.ObjectInfo == ObjectInfo && x.Type == ObjectType).ToArray()!;
-            if (qualifier.Length > 0)
-                return GetQualifierName(qualifier.First());
-            return "Unknown Object";
+            return Parent?.FrameEvents?.ResolveObjectName(ObjectInfo, ObjectType) ?? "Unknown Object";
         }
 
         public string GetQualifierName(Qualifier qualifier)

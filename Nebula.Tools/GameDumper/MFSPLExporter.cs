@@ -4,6 +4,8 @@ using Nebula.Core.Data.Chunks.BankChunks.Sounds;
 using Nebula.Core.Data.Chunks.FrameChunks;
 using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Data.Chunks.ObjectChunks.ObjectCommon;
+using Nebula.Core.Data.Chunks.ObjectChunks.ObjectCommon.ObjectMovementDefinitions;
+using Nebula.Core.Data.Chunks.ChunkTypes;
 using Nebula.Core.Data.PackageReaders;
 using Nebula.Core.Memory;
 using Nebula.Core.Utilities;
@@ -401,6 +403,7 @@ namespace Nebula.Tools.GameDumper
                         ? new Dictionary<string, object?>
                         {
                             ["inkEffect"] = frameFx.InkEffect,
+                            ["inkEffectName"] = InkEffectName(frameFx.InkEffect),
                             ["blendCoeff"] = frameFx.BlendCoeff,
                             ["rgbCoeff"] = Rgb(frameFx.RGBCoeff),
                         }
@@ -732,6 +735,21 @@ namespace Nebula.Tools.GameDumper
                         d["collisionType"] = qb.CollisionType;
                         d["width"] = qb.Width;
                         d["height"] = qb.Height;
+                        d["shape"] = qb.Shape.ShapeType;
+                        d["shapeName"] = ShapeName(qb.Shape.ShapeType);
+                        d["fillType"] = qb.Shape.FillType;
+                        d["fillTypeName"] = FillTypeName(qb.Shape.FillType);
+                        d["borderSize"] = qb.Shape.BorderSize;
+                        d["borderColor"] = Rgb(qb.Shape.BorderColor);
+                        d["color1"] = Rgb(qb.Shape.Color1);
+                        d["color2"] = Rgb(qb.Shape.Color2);
+                        d["verticalGradient"] = qb.Shape.VerticalGradient;
+                        d["image"] = qb.Shape.Image;
+                        d["lineFlags"] = new Dictionary<string, object?>
+                        {
+                            ["flipX"] = qb.Shape.LineFlags["FlipX"],
+                            ["flipY"] = qb.Shape.LineFlags["FlipY"],
+                        };
                         break;
                     case ObjectBackdrop bd:
                         d["obstacleType"] = bd.ObstacleType;
@@ -757,14 +775,9 @@ namespace Nebula.Tools.GameDumper
                             ["minimum"] = oc.ObjectValue.Minimum,
                             ["maximum"] = oc.ObjectValue.Maximum,
                         };
-                        d["movements"] = oc.ObjectMovements.Movements.Select(m => (object)new Dictionary<string, object?>
-                        {
-                            ["name"] = m.Name,
-                            ["type"] = m.Type,
-                            ["move"] = m.Move,
-                            ["opt"] = m.Opt,
-                            ["startingDirection"] = m.StartingDirection,
-                        }).ToList();
+                        d["movements"] = oc.ObjectMovements.Movements.Select(m => (object)BuildMovement(m)).ToList();
+                        d["transitionIn"] = BuildTransition(oc.ObjectTransitionIn);
+                        d["transitionOut"] = BuildTransition(oc.ObjectTransitionOut);
                         d["animations"] = oc.ObjectAnimations.Animations
                             .OrderBy(a => a.Key)
                             .Select(a => (object)new Dictionary<string, object?>
@@ -924,6 +937,12 @@ namespace Nebula.Tools.GameDumper
             return new Dictionary<string, object?>
             {
                 ["globalEvents"] = globalEvents,
+                ["globalEventComments"] = mfa.GlobalEvents.Comments
+                    .Select(c => (object)new Dictionary<string, object?>
+                    {
+                        ["handle"] = c.Handle,
+                        ["value"] = c.Value,
+                    }).ToList(),
                 ["frames"] = frames,
                 ["dedup"] = dedup,
             };
@@ -963,6 +982,7 @@ namespace Nebula.Tools.GameDumper
                 if (c0.ObjectType == -1 && c0.Num == -10 && c0.Parameters.Length > 0
                     && c0.Parameters[0].Data is ParameterGroup pg)
                 {
+                    d["kind"] = "group";
                     d["group"] = new Dictionary<string, object?>
                     {
                         ["id"] = pg.ID,
@@ -970,6 +990,14 @@ namespace Nebula.Tools.GameDumper
                         ["inactiveOnStart"] = pg.GroupFlags["InactiveOnStart"],
                         ["closed"] = pg.GroupFlags["Closed"],
                     };
+                }
+                else if (c0.ObjectType == -1 && c0.Num == -9 && c0.Parameters.Length > 0
+                    && c0.Parameters[0].Data is ParameterRemark remark)
+                {
+                    d["kind"] = "comment";
+                    d["comment"] = BuildRemark(remark);
+                    d["conditions"] = new List<object?>();
+                    d["actions"] = new List<object?>();
                 }
             }
 
@@ -1069,12 +1097,22 @@ namespace Nebula.Tools.GameDumper
                         {
                             ["calculateDirection"] = shoot.ShootFlags["CalculateDirection"],
                         };
+                        d["direction"] = DirectionMaskDoc((uint)shoot.Direction);
+                        break;
+                    case ParameterInt pint when p.Code == 29:
+                        d["kind"] = "direction";
+                        foreach (var kv in DirectionMaskDoc((uint)pint.Value))
+                            d[kv.Key] = kv.Value;
                         break;
                     case ParameterExpressions exps:
                         d["kind"] = "expression";
                         d["comparison"] = exps.Comparison;
                         d["comparisonOp"] = ComparisonOp(exps.Comparison);
                         d["tokens"] = exps.Expressions.Select(e => SafeText(e, out _)).ToList();
+                        break;
+                    case ParameterRemark:
+                        d["kind"] = "comment";
+                        d.Remove("text");
                         break;
                     case ParameterChildEvent child:
                         d["kind"] = "childEvents";
@@ -1100,6 +1138,18 @@ namespace Nebula.Tools.GameDumper
             return d;
         }
 
+        static Dictionary<string, object?> DirectionMaskDoc(uint mask)
+        {
+            var indices = ACEventBase.GetDirectionIndices(mask);
+            return new Dictionary<string, object?>
+            {
+                ["text"] = ACEventBase.FormatDirectionMask(mask, ACEventBase.DirectionMaskStyle.List),
+                ["mask"] = mask,
+                ["directions"] = indices.Cast<object>().ToList(),
+                ["degrees"] = indices.Select(i => (object)ACEventBase.DirectionToDegrees(i)).ToList(),
+            };
+        }
+
         static void TryAddItemHandle(Dictionary<string, object?> d, ACEventBase ace)
         {
             if (!NebulaCore.MFA)
@@ -1117,28 +1167,38 @@ namespace Nebula.Tools.GameDumper
         {
             try
             {
-                Frame? frm = p.FrameEvents?.Parent;
-                if (frm?.FrameObjectItems.TryGetValue(objectInfo, out ObjectInfo? oi) == true && oi != null)
+                FrameEvents? fe = p.FrameEvents;
+                Frame? frm = fe?.Parent;
+                if (fe != null && fe.EventObjects.TryGetValue(objectInfo, out EventObject? eo))
                 {
-                    d["objectName"] = oi.Name;
+                    if (eo.ObjectType == 1)
+                    {
+                        int handle = (int)eo.ItemHandle;
+                        d["itemHandle"] = handle;
+                        if (frm?.FrameObjectItems.TryGetValue(handle, out ObjectInfo? localOi) == true && localOi != null)
+                        {
+                            d["objectName"] = localOi.Name;
+                            return;
+                        }
+                        if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out localOi) && localOi != null)
+                        {
+                            d["objectName"] = localOi.Name;
+                            return;
+                        }
+                    }
+                    if (!string.IsNullOrEmpty(eo.Name))
+                    {
+                        d["objectName"] = eo.Name;
+                        return;
+                    }
+                }
+                ObjectInfo? resolved = fe?.ResolveObject(objectInfo);
+                if (resolved != null && !string.IsNullOrEmpty(resolved.Name))
+                {
+                    d["objectName"] = resolved.Name;
                     return;
                 }
-                FrameEvents? fe = p.FrameEvents;
-                if (fe != null && fe.EventObjects.TryGetValue(objectInfo, out EventObject? eo) && eo.ObjectType == 1)
-                {
-                    int handle = (int)eo.ItemHandle;
-                    if (frm?.FrameObjectItems.TryGetValue(handle, out oi) == true && oi != null)
-                    {
-                        d["objectName"] = oi.Name;
-                        return;
-                    }
-                    if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(handle, out oi) && oi != null)
-                    {
-                        d["objectName"] = oi.Name;
-                        return;
-                    }
-                }
-                if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(objectInfo, out oi) && oi != null)
+                if (NebulaCore.PackageData.FrameItems.Items.TryGetValue(objectInfo, out ObjectInfo? oi) && oi != null)
                     d["objectName"] = oi.Name;
             }
             catch { }
@@ -1235,6 +1295,7 @@ namespace Nebula.Tools.GameDumper
         static Dictionary<string, object?> InkOf(ObjectInfo oi) => new()
         {
             ["inkEffect"] = oi.Header.InkEffect,
+            ["inkEffectName"] = InkEffectName(oi.Header.InkEffect),
             ["inkEffectParam"] = oi.Header.InkEffectParam,
             ["blendCoeff"] = oi.Header.BlendCoeff,
             ["rgbCoeff"] = Rgb(oi.Header.RGBCoeff),
@@ -1245,9 +1306,420 @@ namespace Nebula.Tools.GameDumper
         static Dictionary<string, object?> LayerEffectOf(FrameLayerEffect effect) => new()
         {
             ["inkEffect"] = effect.InkEffect,
+            ["inkEffectName"] = InkEffectName(effect.InkEffect),
             ["inkEffectParam"] = effect.InkEffectParam,
             ["blendCoeff"] = effect.BlendCoeff,
             ["rgbCoeff"] = Rgb(effect.RGBCoeff),
+        };
+
+        static Dictionary<string, object?> BuildRemark(ParameterRemark remark)
+        {
+            var d = new Dictionary<string, object?>
+            {
+                ["text"] = remark.ResolveText(),
+                ["handle"] = remark.CommentHandle,
+                ["alignment"] = remark.Alignment,
+                ["alignmentName"] = remark.AlignmentName,
+                ["color"] = Rgb(remark.Color),
+                ["fontFace"] = remark.FaceName,
+                ["fontHeight"] = remark.Height,
+                ["fontWeight"] = remark.Weight,
+                ["fontItalic"] = remark.Italic != 0,
+                ["fontUnderline"] = remark.Underline != 0,
+                ["fontStyle"] = remark.StyleName,
+            };
+            return d;
+        }
+
+        static Dictionary<string, object?> BuildMovement(ObjectMovement m)
+        {
+            bool isExt = m.MovementDefinition is ObjectMovementExtension;
+            short type = isExt ? (short)14 : m.Type;
+            var d = new Dictionary<string, object?>
+            {
+                ["name"] = m.Name,
+                ["type"] = type,
+                ["typeName"] = MovementTypeName(type, m.MovementDefinition),
+                ["player"] = m.Player,
+                ["movingAtStart"] = m.Move != 0,
+                ["move"] = m.Move,
+                ["opt"] = m.Opt,
+                ["startingDirection"] = m.StartingDirection,
+            };
+
+            switch (m.MovementDefinition)
+            {
+                case ObjectMovementMouse mouse:
+                    d["dx"] = mouse.Dx;
+                    d["fx"] = mouse.Fx;
+                    d["dy"] = mouse.Dy;
+                    d["fy"] = mouse.Fy;
+                    d["mouseFlags"] = mouse.MouseFlags.Value;
+                    break;
+                case ObjectMovementRace race:
+                    d["speed"] = race.Speed;
+                    d["acceleration"] = race.Acceleration;
+                    d["deceleration"] = race.Deceleration;
+                    d["rotation"] = race.Rotation;
+                    d["bounceMultiplier"] = race.BounceMultiplier;
+                    d["angles"] = race.Angles;
+                    d["reversable"] = race.Reversable != 0;
+                    break;
+                case ObjectMovementGeneric generic:
+                    d["speed"] = generic.Speed;
+                    d["acceleration"] = generic.Acceleration;
+                    d["deceleration"] = generic.Deceleration;
+                    d["bounceMultiplier"] = generic.BounceMultiplier;
+                    d["directions"] = generic.Direction;
+                    break;
+                case ObjectMovementBall ball:
+                    d["speed"] = ball.Speed;
+                    d["bounce"] = ball.Bounce;
+                    d["angles"] = ball.Angles;
+                    d["anglesCount"] = BallAnglesCount(ball.Angles);
+                    d["security"] = ball.Security;
+                    d["deceleration"] = ball.Decelerate;
+                    break;
+                case ObjectMovementPath path:
+                    d["minimumSpeed"] = path.MinimumSpeed;
+                    d["maximumSpeed"] = path.MaximumSpeed;
+                    d["loop"] = path.Loop != 0;
+                    d["reposition"] = path.Reposition != 0;
+                    d["reverse"] = path.Reverse != 0;
+                    d["nodes"] = path.PathNodes.Select(n => (object)new Dictionary<string, object?>
+                    {
+                        ["speed"] = n.Speed,
+                        ["direction"] = n.Direction,
+                        ["dx"] = n.Dx,
+                        ["dy"] = n.Dy,
+                        ["length"] = n.Length,
+                        ["pause"] = n.Pause,
+                        ["name"] = n.Name,
+                    }).ToList();
+                    break;
+                case ObjectMovementPlatform platform:
+                    d["speed"] = platform.Speed;
+                    d["acceleration"] = platform.Acceleration;
+                    d["deceleration"] = platform.Deceleration;
+                    d["jumpControl"] = platform.JumpControl;
+                    d["gravity"] = platform.Gravity;
+                    d["jump"] = platform.Jump;
+                    break;
+                case ObjectMovementExtension ext:
+                    d["extension"] = ext.FileName;
+                    d["identifier"] = MovementFourCC(m.ID);
+                    d["id"] = m.ID;
+                    if (!string.IsNullOrEmpty(ext.FileName) &&
+                        ext.FileName.IndexOf("InAndOut", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        foreach (var kv in ParseInAndOut(ext.Data))
+                            d[kv.Key] = kv.Value;
+                    }
+                    else if (!string.IsNullOrEmpty(ext.FileName) &&
+                        ext.FileName.IndexOf("circular", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        foreach (var kv in ParseCircular(ext.Data))
+                            d[kv.Key] = kv.Value;
+                    }
+                    else if (ext.Data.Length > 0)
+                    {
+                        d["dataSize"] = ext.Data.Length;
+                        d["dataHex"] = Convert.ToHexString(ext.Data).ToLowerInvariant();
+                    }
+                    break;
+            }
+
+            return d;
+        }
+
+        static int[] ReadMovementExtInts(byte[] data)
+        {
+            if (data == null || data.Length < 4)
+                return Array.Empty<int>();
+            int offset = data.Length % 4 == 1 ? 1 : 0;
+            int count = (data.Length - offset) / 4;
+            if (count < 1)
+                return Array.Empty<int>();
+            int[] ints = new int[count];
+            for (int i = 0; i < count; i++)
+                ints[i] = BitConverter.ToInt32(data, offset + i * 4);
+            return ints;
+        }
+
+        static Dictionary<string, object?> ParseInAndOut(byte[] data)
+        {
+            var d = new Dictionary<string, object?>();
+            int[] ints = ReadMovementExtInts(data);
+            if (ints.Length < 1)
+                return d;
+
+            int flags = ints.Length > 0 ? ints[0] : 0;
+            d["flags"] = flags;
+            d["movingAtStart"] = (flags & 1) != 0;
+            if (ints.Length > 2)
+                d["speed"] = ints[2];
+            if (ints.Length > 3)
+            {
+                d["inAndOutType"] = ints[3];
+                d["inAndOutTypeName"] = ints[3] switch
+                {
+                    0 => "Move In",
+                    1 => "Move Out",
+                    2 => "Move In and Out",
+                    3 => "Appears",
+                    4 => "Disappears",
+                    _ => "Unknown",
+                };
+            }
+            if (ints.Length > 4)
+            {
+                d["direction"] = ints[4];
+                d["directionName"] = ints[4] switch
+                {
+                    0 => "Left",
+                    1 => "Right",
+                    2 => "Top",
+                    3 => "Bottom",
+                    4 => "Top-Left",
+                    5 => "Top-Right",
+                    6 => "Bottom-Left",
+                    7 => "Bottom-Right",
+                    _ => "Custom",
+                };
+            }
+            return d;
+        }
+
+        static Dictionary<string, object?> ParseCircular(byte[] data)
+        {
+            var d = new Dictionary<string, object?>();
+            int[] ints = ReadMovementExtInts(data);
+            if (ints.Length < 4)
+                return d;
+
+            d["centerX"] = ints[0];
+            d["centerY"] = ints[1];
+            d["radius"] = ints[2];
+            d["startingAngle"] = ints[3];
+            if (ints.Length > 4)
+                d["minSpiralRadius"] = ints[4];
+            if (ints.Length > 5)
+                d["maxSpiralRadius"] = ints[5];
+            if (ints.Length > 6)
+                d["movingAtStart"] = ints[6] != 0;
+            if (ints.Length > 7)
+            {
+                d["onCompletion"] = ints[7];
+                d["onCompletionName"] = ints[7] switch
+                {
+                    0 => "Stop",
+                    1 => "Reverse angular velocity",
+                    2 => "Reverse spiral velocity",
+                    3 => "Reverse both",
+                    _ => "Unknown",
+                };
+            }
+            if (ints.Length > 8)
+                d["angularVelocity"] = ints[8];
+            if (ints.Length > 9)
+                d["spiralVelocity"] = ints[9];
+            return d;
+        }
+
+        static Dictionary<string, object?> BuildTransition(TransitionChunk t)
+        {
+            if (t == null || (string.IsNullOrEmpty(t.ModuleName) && string.IsNullOrEmpty(t.ID)))
+                return new Dictionary<string, object?> { ["name"] = "None" };
+
+            var d = new Dictionary<string, object?>
+            {
+                ["name"] = string.IsNullOrEmpty(t.ModuleName) ? TransitionName(t.ID) : t.ModuleName,
+                ["id"] = t.ID,
+                ["fileName"] = t.FileName,
+                ["duration"] = t.Duration,
+                ["from"] = t.UseColor ? "color" : "background",
+            };
+            if (t.UseColor)
+                d["color"] = Rgb(t.Color);
+            else
+                d["color"] = Rgb(t.Color);
+
+            var extra = DecodeTransitionParams(t.ID, t.ParameterData);
+            if (extra.Count > 0)
+                d["params"] = extra;
+            return d;
+        }
+
+        static Dictionary<string, object?> DecodeTransitionParams(string id, byte[] data)
+        {
+            var d = new Dictionary<string, object?>();
+            if (data == null || data.Length == 0)
+                return d;
+
+            int[] ints = ReadLEInts(data);
+            string[] names = id switch
+            {
+                "BAND" => new[] { "bandCount", "direction" },
+                "DOOR" => new[] { "style" },
+                "SE00" => new[] { "direction", "style" },
+                "SE10" => new[] { "style" },
+                "SE12" => new[] { "cellSize", "style" },
+                "SE03" => new[] { "lineCount", "direction" },
+                "MOSA" => new[] { "blockSize" },
+                "SE05" => new[] { "style" },
+                "SE06" => new[] { "direction" },
+                "SCRL" => new[] { "direction" },
+                "SE01" => new[] { "style" },
+                "SE07" => new[] { "style" },
+                "SE09" => new[] { "style" },
+                "SE08" => new[] { "style" },
+                "SE02" => new[] { "style" },
+                "SE13" => new[] { "style" },
+                "ZIGZ" => new[] { "style" },
+                "SE04" => new[] { "style" },
+                "SE11" => new[] { "style" },
+                _ => Array.Empty<string>(),
+            };
+
+            if (names.Length == 0)
+            {
+                if (ints.Length == 1)
+                    d["value"] = ints[0];
+                else if (ints.Length > 1)
+                    d["values"] = ints.Cast<object>().ToList();
+                else
+                    d["dataHex"] = Convert.ToHexString(data).ToLowerInvariant();
+                return d;
+            }
+
+            for (int i = 0; i < names.Length && i < ints.Length; i++)
+                d[names[i]] = ints[i];
+            if (ints.Length > names.Length)
+                d["extra"] = ints.Skip(names.Length).Cast<object>().ToList();
+            return d;
+        }
+
+        static int[] ReadLEInts(byte[] data)
+        {
+            if (data.Length >= 4 && data.Length % 4 == 0)
+            {
+                int[] ints = new int[data.Length / 4];
+                for (int i = 0; i < ints.Length; i++)
+                    ints[i] = BitConverter.ToInt32(data, i * 4);
+                return ints;
+            }
+            if (data.Length == 2)
+                return new[] { (int)BitConverter.ToInt16(data, 0) };
+            if (data.Length >= 2 && data.Length % 2 == 0)
+            {
+                int[] shorts = new int[data.Length / 2];
+                for (int i = 0; i < shorts.Length; i++)
+                    shorts[i] = BitConverter.ToInt16(data, i * 2);
+                return shorts;
+            }
+            if (data.Length == 1)
+                return new[] { (int)data[0] };
+            return Array.Empty<int>();
+        }
+
+        static string MovementTypeName(short type, ObjectMovementDefinition def) => def switch
+        {
+            ObjectMovementExtension ext when !string.IsNullOrEmpty(ext.FileName) =>
+                ext.FileName.IndexOf("InAndOut", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? "InAndOut"
+                    : ext.FileName.IndexOf("circular", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? "Circular"
+                        : ("Extension (" + ext.FileName + ")"),
+            _ => type switch
+            {
+                0 => "Stopped",
+                1 => "Mouse Controlled",
+                2 => "Race Car",
+                3 => "Eight Directions",
+                4 => "Bouncing Ball",
+                5 => "Path",
+                9 => "Platform",
+                14 => "Extension",
+                _ => "Unknown",
+            }
+        };
+
+        static int BallAnglesCount(short angles) => angles switch
+        {
+            0 => 32,
+            1 => 16,
+            2 => 8,
+            3 => 12,
+            _ => angles,
+        };
+
+        static string MovementFourCC(int id)
+        {
+            char c0 = (char)(id & 0xFF);
+            char c1 = (char)((id >> 8) & 0xFF);
+            char c2 = (char)((id >> 16) & 0xFF);
+            char c3 = (char)((id >> 24) & 0xFF);
+            if (c0 >= 32 && c0 < 127 && c1 >= 32 && c1 < 127 && c2 >= 32 && c2 < 127 && c3 >= 32 && c3 < 127)
+                return new string(new[] { c0, c1, c2, c3 });
+            return string.Empty;
+        }
+
+        static string TransitionName(string id) => id switch
+        {
+            "SE00" => "Advanced Scrolling",
+            "SE10" => "Back",
+            "BAND" => "Bands",
+            "SE12" => "Cell",
+            "DOOR" => "Door",
+            "FADE" => "Fade",
+            "SE03" => "Line",
+            "MOSA" => "Mosaic",
+            "SE05" => "Open",
+            "SE06" => "Push",
+            "SCRL" => "Scrolling",
+            "SE01" => "Square",
+            "SE07" => "Stretch",
+            "SE09" => "Stretch 2",
+            "SE08" => "Turn",
+            "SE02" => "Turn 2",
+            "SE13" => "Weft",
+            "ZIGZ" => "Zigzag",
+            "SE04" => "ZigZag 2",
+            "ZOOM" => "Zoom",
+            "SE11" => "Zoom 2",
+            _ => string.IsNullOrEmpty(id) ? "None" : id,
+        };
+
+        static string InkEffectName(int inkEffect) => inkEffect switch
+        {
+            0 => "None",
+            1 => "Semi-transparent",
+            2 => "Inverted",
+            3 => "XOR",
+            4 => "AND",
+            5 => "OR",
+            9 => "Add",
+            10 => "Monochrome",
+            11 => "Subtract",
+            _ => "Unknown",
+        };
+
+        static string FillTypeName(int fillType) => fillType switch
+        {
+            0 => "None",
+            1 => "Solid Color",
+            2 => "Gradient",
+            3 => "Motif",
+            _ => "Unknown",
+        };
+
+        static string ShapeName(int shape) => shape switch
+        {
+            0 => "Line",
+            1 => "Line",
+            2 => "Rectangle",
+            3 => "Ellipse",
+            _ => "Unknown",
         };
 
         static string TypeName(int type) => type switch
