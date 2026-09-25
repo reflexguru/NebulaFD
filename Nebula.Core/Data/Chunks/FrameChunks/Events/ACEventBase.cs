@@ -668,5 +668,96 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
             }
             return output;
         }
+
+        public static string GetExtensionFileName(int objectType)
+        {
+            if (objectType < 32)
+                return string.Empty;
+            var exts = NebulaCore.PackageData?.Extensions?.Exts;
+            if (exts == null || !exts.TryGetValue(objectType - 32, out Extension? ext) || ext == null)
+                return string.Empty;
+            return ext.FileName ?? string.Empty;
+        }
+
+        static string Stem(string fileName)
+        {
+            int dot = fileName.LastIndexOf('.');
+            return dot > 0 ? fileName[..dot] : fileName;
+        }
+
+        public bool TryFormatExtensionAction(string header, out string text)
+        {
+            text = string.Empty;
+            if (ObjectType < 32)
+                return false;
+            switch (Stem(GetExtensionFileName(ObjectType)).ToLowerInvariant())
+            {
+                case "timex":
+                    switch (Num)
+                    {
+                        case 81:
+                            text = header + "Start timer " + Parameters[0];
+                            return true;
+                        case 82:
+                            text = header + "Pause timer " + Parameters[0];
+                            return true;
+                        case 83:
+                            text = header + "Resume timer " + Parameters[0];
+                            return true;
+                        case 84:
+                            text = header + "Reset timer " + Parameters[0];
+                            return true;
+                        case 85:
+                            text = header + "Stop timer " + Parameters[0];
+                            return true;
+                        default:
+                            return false;
+                    }
+                default:
+                    return false;
+            }
+        }
+
+        public bool TryFormatExtensionCondition(out string text)
+        {
+            text = string.Empty;
+            if (ObjectType < 32)
+                return false;
+            string obj = GetObjectName();
+            switch (Stem(GetExtensionFileName(ObjectType)).ToLowerInvariant())
+            {
+                case "timex":
+                    switch (Num)
+                    {
+                        case -88:
+                            text = $"{obj}: Timer {Parameters[0]} is equal to {FormatMs(Parameters[1].ToString())}";
+                            return true;
+                        case -91:
+                            text = $"{obj}: The application is paused";
+                            return true;
+                        default:
+                            return false;
+                    }
+                default:
+                    return false;
+            }
+        }
+
+        static string FormatMs(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return "ms";
+            bool numeric = true;
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c != '-' && c != '.' && (c < '0' || c > '9'))
+                {
+                    numeric = false;
+                    break;
+                }
+            }
+            return numeric ? value + "ms" : value + " ms";
+        }
     }
 }

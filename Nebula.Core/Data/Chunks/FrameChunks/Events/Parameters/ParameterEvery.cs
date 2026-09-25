@@ -26,7 +26,7 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 
         public override string ToString()
         {
-            return "Every " + Delay + ", " + Compteur;
+            return Delay + " ms";
         }
     }
 }

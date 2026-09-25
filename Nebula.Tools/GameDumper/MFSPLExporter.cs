@@ -725,6 +725,14 @@ namespace Nebula.Tools.GameDumper
                 ["typeName"] = TypeName(oi.Header.Type),
                 ["objectFlags"] = oi.Header.ObjectFlags.Value,
             };
+            if (oi.Header.Type >= 32
+                && NebulaCore.PackageData?.Extensions?.Exts != null
+                && NebulaCore.PackageData.Extensions.Exts.TryGetValue(oi.Header.Type - 32, out var ext)
+                && ext != null)
+            {
+                d["extension"] = ext.FileName;
+                d["extensionName"] = ext.Name;
+            }
 
             try
             {
@@ -1123,6 +1131,11 @@ namespace Nebula.Tools.GameDumper
                         d["objectInfo"] = obj.ObjectInfo;
                         d["objectType"] = obj.ObjectType;
                         d["name"] = SafeText(obj, out _);
+                        break;
+                    case ParameterEvery every:
+                        d["kind"] = "every";
+                        d["delayMs"] = every.Delay;
+                        d["text"] = every.Delay + " ms";
                         break;
                     default:
                         if (p.Data != null)

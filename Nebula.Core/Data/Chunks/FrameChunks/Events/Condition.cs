@@ -703,6 +703,8 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                             switch (ObjectType)
                             {
                                 default:
+                                    if (TryFormatExtensionCondition(out string extCondition))
+                                        return extCondition;
                                     string output = $"{GetObjectName()}: Event ID {Num}, {Parameters.Length} Parameters";
                                     for (int i = 0; i < Parameters.Length; i++)
                                         output += (i == 0 ? " { " : "") + Parameters[i] + (i + 1 < Parameters.Length ? ", " : " }");
