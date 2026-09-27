@@ -1,10 +1,6 @@
-using System.Drawing;
-using System.Drawing.Imaging;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-
-#pragma warning disable CA1416
 
 namespace Nebula.Tools.GameDumper
 {
@@ -310,14 +306,16 @@ namespace Nebula.Tools.GameDumper
                         Path.GetFileNameWithoutExtension(info.File) + "_pad32.png");
                     try
                     {
-                        using var src = new Bitmap(info.File);
-                        using var dst = new Bitmap(pw, ph, PixelFormat.Format32bppArgb);
-                        using (var g = Graphics.FromImage(dst))
+                        if (!MfaImageEncoder.TryLoadPng(info.File, out var src))
+                            continue;
+                        var canvas = new byte[pw * ph * 4];
+                        MfaImageEncoder.Blit(src.Bgra, src.Width, src.Height, canvas, pw, ph, 0, 0);
+                        File.WriteAllBytes(dest, MfaImageEncoder.ToPng(new MfaImageEncoder.Decoded
                         {
-                            g.Clear(Color.Transparent);
-                            g.DrawImageUnscaled(src, 0, 0);
-                        }
-                        dst.Save(dest, ImageFormat.Png);
+                            Bgra = canvas,
+                            Width = pw,
+                            Height = ph,
+                        }));
                         padded = (dest, pw, ph);
                     }
                     catch

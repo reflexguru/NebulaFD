@@ -11,7 +11,6 @@ using Nebula.Core.Memory;
 using Nebula.Core.Utilities;
 using Spectre.Console;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -97,14 +96,8 @@ namespace Nebula.Tools.GameDumper
                 try
                 {
                     Image img = kv.Value;
-                    Bitmap bmp = img.GetBitmap();
-                    byte[] png;
-                    using (var ms = new MemoryStream())
-                    {
-                        bmp.Save(ms, ImageFormat.Png);
-                        png = ms.ToArray();
-                    }
-                    img.DisposeBmp();
+                    byte[] png = MfaImageEncoder.ToPng(img);
+                    if (png.Length == 0) { imgFail++; continue; }
 
                     string hash = Convert.ToHexString(SHA256.HashData(png))[..16].ToLowerInvariant();
                     string file;
@@ -525,21 +518,14 @@ namespace Nebula.Tools.GameDumper
                 if (!imageBank.Images.TryGetValue(handle, out var img)) return null;
                 try
                 {
-                    var bmp = img.GetBitmap();
-                    byte[] png;
-                    using (var ms = new MemoryStream())
-                    {
-                        bmp.Save(ms, ImageFormat.Png);
-                        png = ms.ToArray();
-                    }
-                    img.DisposeBmp();
+                    if (!MfaImageEncoder.TryDecode(img, out var decoded)) return null;
                     var f = new DirFrame
                     {
                         Handle = handle,
-                        Png = png,
-                        Hash = Convert.ToHexString(SHA256.HashData(png))[..16].ToLowerInvariant(),
-                        Width = img.Width,
-                        Height = img.Height,
+                        Bgra = decoded.Bgra,
+                        Hash = Convert.ToHexString(SHA256.HashData(decoded.Bgra))[..16].ToLowerInvariant(),
+                        Width = decoded.Width,
+                        Height = decoded.Height,
                         HotspotX = img.HotspotX,
                         HotspotY = img.HotspotY,
                         ActionPointX = img.ActionPointX,
@@ -604,29 +590,24 @@ namespace Nebula.Tools.GameDumper
                 string sheetName = $"a{dd.AnimIndex}_d{dd.DirIndex}.png";
 
                 var framesDoc = new List<object?>();
-                using (var atlas = new Bitmap(sheetW, sheetH))
-                using (var g = Graphics.FromImage(atlas))
+                var atlas = new byte[sheetW * sheetH * 4];
+                int x = 0;
+                foreach (var f in dd.Frames)
                 {
-                    g.Clear(System.Drawing.Color.Transparent);
-                    int x = 0;
-                    foreach (var f in dd.Frames)
+                    MfaImageEncoder.Blit(f.Bgra, f.Width, f.Height, atlas, sheetW, sheetH, x, 0);
+                    framesDoc.Add(new Dictionary<string, object?>
                     {
-                        using (var ms = new MemoryStream(f.Png))
-                        using (var bmp = new Bitmap(ms))
-                            g.DrawImage(bmp, x, 0, f.Width, f.Height);
-                        framesDoc.Add(new Dictionary<string, object?>
-                        {
-                            ["handle"] = f.Handle,
-                            ["rect"] = new Dictionary<string, object?> { ["x"] = x, ["y"] = 0, ["w"] = f.Width, ["h"] = f.Height },
-                            ["hotspotX"] = f.HotspotX,
-                            ["hotspotY"] = f.HotspotY,
-                            ["actionPointX"] = f.ActionPointX,
-                            ["actionPointY"] = f.ActionPointY,
-                        });
-                        x += f.Width;
-                    }
-                    atlas.Save(Path.Combine(sheetDir, sheetName), ImageFormat.Png);
+                        ["handle"] = f.Handle,
+                        ["rect"] = new Dictionary<string, object?> { ["x"] = x, ["y"] = 0, ["w"] = f.Width, ["h"] = f.Height },
+                        ["hotspotX"] = f.HotspotX,
+                        ["hotspotY"] = f.HotspotY,
+                        ["actionPointX"] = f.ActionPointX,
+                        ["actionPointY"] = f.ActionPointY,
+                    });
+                    x += f.Width;
                 }
+                File.WriteAllBytes(Path.Combine(sheetDir, sheetName),
+                    MfaImageEncoder.ToPng(new MfaImageEncoder.Decoded { Bgra = atlas, Width = sheetW, Height = sheetH }));
 
                 dirsDoc.Add(new Dictionary<string, object?>
                 {
@@ -664,7 +645,7 @@ namespace Nebula.Tools.GameDumper
         sealed class DirFrame
         {
             public uint Handle;
-            public byte[] Png = Array.Empty<byte>();
+            public byte[] Bgra = Array.Empty<byte>();
             public string Hash = "";
             public int Width;
             public int Height;
