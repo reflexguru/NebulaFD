@@ -8,10 +8,11 @@ namespace Nebula.Tools.GameDumper
     /// <summary>
     /// Converts the MFSPLExporter sprite sheets (sprites/&lt;object&gt;/sheet.json + aX_dY.png) into Godot
     /// <c>SpriteFrames</c> resources (.tres) plus a per-frame offset manifest. One CTF animation direction
-    /// becomes one Godot animation; frames are AtlasTexture regions of that direction's PNG (left-to-right,
-    /// original order). Because Godot's SpriteFrames has no per-frame hotspot, the hotspot→offset mapping
-    /// (centered mode: offset = (w/2 - hotspotX, h/2 - hotspotY)) is written to offset.json for the engine
-    /// runtime to apply.
+    /// becomes one Godot animation; frames are AtlasTexture regions of that direction's PNG (original
+    /// order; the IR may pack them in a 2D grid). Hotspots are already baked into the sheet (shared cell,
+    /// hotspot-aligned), so every frame of a direction has the same size and the same hotspot. The
+    /// hotspot→offset mapping (centered mode: offset = (w/2 - hotspotX, h/2 - hotspotY)) is still written
+    /// to offset.json for the engine runtime to apply as Sprite2D.offset.
     /// </summary>
     public class GodotSpriteFramesExporter
     {
@@ -255,7 +256,8 @@ namespace Nebula.Tools.GameDumper
                 var frames = new List<object?>();
                 foreach (var f in d.Frames)
                 {
-                    // centered=true: offset = (w/2 - hotspotX, h/2 - hotspotY)
+                    // centered=true: offset = (w/2 - hotspotX, h/2 - hotspotY).
+                    // After IR hotspot-alignment, W/H/hotspot are identical across a direction's frames.
                     double ox = f.Rect.W / 2.0 - f.HotspotX;
                     double oy = f.Rect.H / 2.0 - f.HotspotY;
                     frames.Add(new Dictionary<string, object?>

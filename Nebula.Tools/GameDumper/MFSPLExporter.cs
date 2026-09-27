@@ -417,12 +417,20 @@ namespace Nebula.Tools.GameDumper
         // ---------------- spritesheets ----------------
 
         /// <summary>
-        /// Exports each Active object's animation directions as sprite sheets: one PNG per direction, with
-        /// frames laid out left-to-right in the direction's original frame order (never re-sorted) — so a
-        /// "left 2 frames / right 2 frames" animation keeps its natural order. Each frame's hotspot / action
-        /// point (CTF anchors with no Godot equivalent) is recorded in sheet.json for Sprite2D.offset mapping.
-        /// Identical objects across levels share one directory (content-fingerprint dedup); same-named objects
-        /// with different content get a hash suffix.
+        /// Exports each Active object's animation directions as sprite sheets: one PNG per direction.
+        /// Frame <em>order</em> is never re-sorted (a "left 2 / right 2" animation keeps its natural
+        /// sequence). Multi-frame directions are:
+        /// <list type="bullet">
+        /// <item>Aligned onto a shared cell so every frame's hotspot sits at the same pixel — Godot
+        /// SpriteFrames has no per-frame hotspot, so the alignment is baked into the PNG (the first
+        /// frame is padded too when later frames extend past it).</item>
+        /// <item>Packed into a 2D atlas when a single row would be much wider than it is tall, wrapping
+        /// whole frames onto new rows. A frame is never split across rows. Sheets already &lt; 256px
+        /// wide, or layouts that would not shrink (or would grow) the atlas, stay as a single row.</item>
+        /// </list>
+        /// Each frame's (now cell-relative) hotspot / action point is recorded in sheet.json for
+        /// Sprite2D.offset mapping. Identical objects across levels share one directory
+        /// (content-fingerprint dedup); same-named objects with different content get a hash suffix.
         /// </summary>
         public static SpritesheetResult ExportSpritesheets(
             MFAPackageData mfa,
@@ -584,30 +592,31 @@ namespace Nebula.Tools.GameDumper
             {
                 if (dd.Frames.Count == 0) continue;
 
-                // One PNG per direction, frames left-to-right in original order (no re-sorting).
-                int sheetW = dd.Frames.Sum(f => f.Width);
-                int sheetH = dd.Frames.Max(f => f.Height);
+                AlignFramesToHotspot(dd.Frames, out int cellW, out int cellH, out int hotX, out int hotY, out var blit);
+                var layout = PackFrameCells(dd.Frames.Count, cellW, cellH);
                 string sheetName = $"a{dd.AnimIndex}_d{dd.DirIndex}.png";
 
                 var framesDoc = new List<object?>();
-                var atlas = new byte[sheetW * sheetH * 4];
-                int x = 0;
-                foreach (var f in dd.Frames)
+                var atlas = new byte[layout.SheetW * layout.SheetH * 4];
+                for (int i = 0; i < dd.Frames.Count; i++)
                 {
-                    MfaImageEncoder.Blit(f.Bgra, f.Width, f.Height, atlas, sheetW, sheetH, x, 0);
+                    var f = dd.Frames[i];
+                    int cx = layout.Positions[i].X;
+                    int cy = layout.Positions[i].Y;
+                    MfaImageEncoder.Blit(f.Bgra, f.Width, f.Height, atlas, layout.SheetW, layout.SheetH,
+                        cx + blit[i].X, cy + blit[i].Y);
                     framesDoc.Add(new Dictionary<string, object?>
                     {
                         ["handle"] = f.Handle,
-                        ["rect"] = new Dictionary<string, object?> { ["x"] = x, ["y"] = 0, ["w"] = f.Width, ["h"] = f.Height },
-                        ["hotspotX"] = f.HotspotX,
-                        ["hotspotY"] = f.HotspotY,
-                        ["actionPointX"] = f.ActionPointX,
-                        ["actionPointY"] = f.ActionPointY,
+                        ["rect"] = new Dictionary<string, object?> { ["x"] = cx, ["y"] = cy, ["w"] = cellW, ["h"] = cellH },
+                        ["hotspotX"] = hotX,
+                        ["hotspotY"] = hotY,
+                        ["actionPointX"] = f.ActionPointX + blit[i].X,
+                        ["actionPointY"] = f.ActionPointY + blit[i].Y,
                     });
-                    x += f.Width;
                 }
                 File.WriteAllBytes(Path.Combine(sheetDir, sheetName),
-                    MfaImageEncoder.ToPng(new MfaImageEncoder.Decoded { Bgra = atlas, Width = sheetW, Height = sheetH }));
+                    MfaImageEncoder.ToPng(new MfaImageEncoder.Decoded { Bgra = atlas, Width = layout.SheetW, Height = layout.SheetH }));
 
                 dirsDoc.Add(new Dictionary<string, object?>
                 {
@@ -619,8 +628,8 @@ namespace Nebula.Tools.GameDumper
                     ["repeat"] = dd.Repeat,
                     ["repeatFrame"] = dd.RepeatFrame,
                     ["sheet"] = sheetName,
-                    ["sheetWidth"] = sheetW,
-                    ["sheetHeight"] = sheetH,
+                    ["sheetWidth"] = layout.SheetW,
+                    ["sheetHeight"] = layout.SheetH,
                     ["frames"] = framesDoc,
                 });
             }
@@ -630,6 +639,115 @@ namespace Nebula.Tools.GameDumper
                 ["object"] = objectName,
                 ["directions"] = dirsDoc,
             }, JsonOptions));
+        }
+
+        /// <summary>
+        /// Pads every frame onto a shared cell so hotspots coincide. Deltas are taken from the first
+        /// frame's hotspot; if a later frame extends further left/up, the whole group (including
+        /// frame 0) is shifted so every blit is in-bounds. The cell hotspot is therefore
+        /// <c>(max hotspotX, max hotspotY)</c> across the direction.
+        /// </summary>
+        static void AlignFramesToHotspot(
+            List<DirFrame> frames,
+            out int cellW, out int cellH,
+            out int hotX, out int hotY,
+            out Point[] blit)
+        {
+            int n = frames.Count;
+            blit = new Point[n];
+            hotX = frames[0].HotspotX;
+            hotY = frames[0].HotspotY;
+            int maxRight = frames[0].Width - frames[0].HotspotX;
+            int maxBottom = frames[0].Height - frames[0].HotspotY;
+            for (int i = 1; i < n; i++)
+            {
+                var f = frames[i];
+                if (f.HotspotX > hotX) hotX = f.HotspotX;
+                if (f.HotspotY > hotY) hotY = f.HotspotY;
+                int right = f.Width - f.HotspotX;
+                int bottom = f.Height - f.HotspotY;
+                if (right > maxRight) maxRight = right;
+                if (bottom > maxBottom) maxBottom = bottom;
+            }
+
+            cellW = Math.Max(1, hotX + maxRight);
+            cellH = Math.Max(1, hotY + maxBottom);
+            for (int i = 0; i < n; i++)
+                blit[i] = new Point(hotX - frames[i].HotspotX, hotY - frames[i].HotspotY);
+        }
+
+        // Don't wrap a strip that is already narrower than this — wrapping 32px walk-cycles
+        // into a column does not help, and Godot atlas regions stay trivial to inspect.
+        const int MinWidthForWrap = 256;
+
+        sealed class SheetLayout
+        {
+            public int SheetW;
+            public int SheetH;
+            public Point[] Positions = Array.Empty<Point>();
+        }
+
+        /// <summary>
+        /// Packs <paramref name="count"/> equal cells of <paramref name="cellW"/>×<paramref name="cellH"/>
+        /// into an atlas. Default is a single row (original order, left-to-right). When that row is at
+        /// least <see cref="MinWidthForWrap"/> px wide, whole cells may wrap onto further rows — mixed
+        /// row/column placement is allowed whenever it strictly shrinks <c>max(width,height)</c>. A
+        /// cell is never split across rows (Godot needs a contiguous AtlasTexture region per frame).
+        /// Layouts that would not change that max, or would increase it, keep the single row.
+        /// </summary>
+        static SheetLayout PackFrameCells(int count, int cellW, int cellH)
+        {
+            var linear = GridLayout(count, count, cellW, cellH);
+            if (count <= 1 || linear.SheetW < MinWidthForWrap)
+                return linear;
+
+            int linearMax = Math.Max(linear.SheetW, linear.SheetH);
+            int bestCols = count;
+            int bestMax = linearMax;
+            long bestArea = (long)linear.SheetW * linear.SheetH;
+            int bestDiff = Math.Abs(linear.SheetW - linear.SheetH);
+            int bestH = linear.SheetH;
+
+            for (int cols = 1; cols < count; cols++)
+            {
+                int rows = (count + cols - 1) / cols;
+                int w = cols * cellW;
+                int h = rows * cellH;
+                int mx = Math.Max(w, h);
+                if (mx >= linearMax) continue; // not smaller, or would grow
+
+                long area = (long)w * h;
+                int diff = Math.Abs(w - h);
+                bool better = mx < bestMax
+                    || (mx == bestMax && area < bestArea)
+                    || (mx == bestMax && area == bestArea && diff < bestDiff)
+                    || (mx == bestMax && area == bestArea && diff == bestDiff && h < bestH);
+                if (!better) continue;
+
+                bestCols = cols;
+                bestMax = mx;
+                bestArea = area;
+                bestDiff = diff;
+                bestH = h;
+            }
+
+            return bestCols == count ? linear : GridLayout(count, bestCols, cellW, cellH);
+        }
+
+        static SheetLayout GridLayout(int count, int cols, int cellW, int cellH)
+        {
+            if (count < 1) count = 1;
+            if (cols < 1) cols = 1;
+            int rows = (count + cols - 1) / cols;
+            var pos = new Point[count];
+            for (int i = 0; i < count; i++)
+                pos[i] = new Point((i % cols) * cellW, (i / cols) * cellH);
+            return new SheetLayout
+            {
+                SheetW = Math.Max(1, cols * cellW),
+                SheetH = Math.Max(1, rows * cellH),
+                Positions = pos,
+            };
         }
 
         static string SanitizeFileName(string name)
