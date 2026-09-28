@@ -433,9 +433,8 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
 
         public static double DirectionToDegrees(int dir)
         {
-            // Fusion dirs run counterclockwise from the right; dump uses clockwise
-            // screen angles: right 0°, down 90°, left 180°, up 270°.
-            return (32 - (dir & 31)) % 32 * 11.25;
+            // Fusion directions run counterclockwise from the right.
+            return (dir & 31) * 11.25;
         }
 
         public static string FormatDirectionDegrees(int dir)
