@@ -64,10 +64,11 @@ WriteSpriteIndex(spritesDir)           // → sprites/index.json
 
 - **`objects.json`** — 对象类型定义 + 每帧实例清单。
   - `app`: `name` / `build` / `width` / `height`
-  - `objectTypes`: `handle` → `{ handle, name, type, typeName, objectFlags, newObjectFlags, qualifiers, alterableValues{names,initial}, alterableStrings{names,initial}, value{initial,minimum,maximum}, movements[], animations[] }`
+  - `objectTypes`: 仅为兼容旧消费者保留的 `handle` → 对象类型表。MFA 会在不同帧复用 handle，因此解析实例时不可使用此全局表；应以 `frames[].objectTypes` 和实例内嵌字段为准。
     - `type`: `0=QuickBackdrop 1=Backdrop 2=Active 3=String 4=Question 5=Score 6=Lives 7=Counter 8=FormattedText 9=SubApplication ≥32=Extension`
     - `animations[]`: `{ id, name, directions[]{ index, minSpeed, maxSpeed, repeat, repeatFrame, frames[] } }`
-  - `frames[]`: `{ name, handle, width, height, instances[]{ objectInfo, x, y, layer, instanceValue, parentType, parentHandle } }`
+  - `frames[]`: `{ name, handle, width, height, objectTypesScope: "frame-authoritative-with-global-fallback", objectTypes{}, instances[] }`
+    - 每个实例内嵌当前帧对象的 `objectTypeRef`、`objectName`、`objectType`、`objectTypeName`、`inkEffect`、`inkEffectName`、`inkEffectParam`、`blendCoeff`、`rgbCoeff`、`transparent`、`antiAliasing`，并保留位置字段 `objectInfo`、`x`、`y`、`layer`、`instanceValue`、`parentType`、`parentHandle`。这些内嵌属性始终以当前帧的对象定义为准。
     - 实例的 `x/y` 就是 CTF 的 **hot spot 坐标**（原始像素，1:1 可直接使用）
     - `parentType != 0` = MFA 的**假实例**（Fake Instance / `CreateOnly`：对象被事件引用但没摆到场上，坐标恒为 0,0）。
       Nebula 自己的帧预览（`Nebula.Core/Utilities/Utilities.cs`）同样会跳过它们，下游默认也跳过。

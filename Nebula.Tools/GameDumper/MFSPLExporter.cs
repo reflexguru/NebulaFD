@@ -21,6 +21,7 @@ using ACEventBase = Nebula.Core.Data.Chunks.FrameChunks.Events.ACEventBase;
 using EventObject = Nebula.Core.Data.Chunks.FrameChunks.Events.EventObject;
 using Parameter = Nebula.Core.Data.Chunks.FrameChunks.Events.Parameter;
 using Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters;
+using Nebula.Core.Data.Chunks.MFAChunks;
 using Image = Nebula.Core.Data.Chunks.BankChunks.Images.Image;
 
 #pragma warning disable CS8602
@@ -789,15 +790,15 @@ namespace Nebula.Tools.GameDumper
 
         static Dictionary<string, object?> BuildObjectsDoc(MFAPackageData mfa)
         {
-            // Global map is first-seen-per-handle only. Consumers that need the real
-            // per-frame object (same name, different graphic) must use frames[].objectTypes.
+            // Compatibility-only global map. MFA object handles are frame-local and can
+            // describe entirely different objects on different frames.
             var objectTypes = new Dictionary<string, object?>();
             foreach (var kv in mfa.FrameItems.Items)
-                objectTypes[kv.Key.ToString()] = BuildTypeDef(kv.Value);
+                objectTypes[kv.Key.ToString()] = BuildTypeDef(kv.Value, FindSourceObject(mfa, kv.Value));
 
             var frames = new List<object?>();
             foreach (var frm in mfa.Frames)
-                frames.Add(BuildFrame(frm));
+                frames.Add(BuildFrame(mfa, frm));
 
             return new Dictionary<string, object?>
             {
@@ -810,11 +811,14 @@ namespace Nebula.Tools.GameDumper
                 },
                 ["objectTypes"] = objectTypes,
                 ["objectTypesScope"] = "global-first-seen",
+                ["objectTypesUsage"] = "legacy-compatibility-only; use frames[].objectTypes or embedded instance metadata",
+                ["objectTypesAuthoritative"] = false,
+                ["frameObjectTypesAuthoritative"] = true,
                 ["frames"] = frames,
             };
         }
 
-        static Dictionary<string, object?> BuildTypeDef(ObjectInfo oi)
+        static Dictionary<string, object?> BuildTypeDef(ObjectInfo oi, MFAObjectInfo? source = null)
         {
             var d = new Dictionary<string, object?>
             {
@@ -906,30 +910,55 @@ namespace Nebula.Tools.GameDumper
             }
             catch { /* best-effort per object type */ }
 
-            foreach (var ink in InkOf(oi))
+            foreach (var ink in InkOf(oi, source))
                 d[ink.Key] = ink.Value;
 
             return d;
         }
 
-        static Dictionary<string, object?> BuildFrame(Frame frm)
+        static Dictionary<string, object?> BuildFrame(MFAPackageData mfa, Frame frm)
         {
+            var sourceObjects = SourceObjectsByHandle(frm);
             var frameTypes = new Dictionary<string, object?>();
             foreach (var kv in frm.FrameObjectItems)
-                frameTypes[kv.Key.ToString()] = BuildTypeDef(kv.Value);
+            {
+                sourceObjects.TryGetValue(kv.Key, out MFAObjectInfo? source);
+                frameTypes[kv.Key.ToString()] = BuildTypeDef(kv.Value, source);
+            }
 
             var instances = new List<object?>();
             foreach (var inst in frm.FrameInstances.Instances)
-                instances.Add(new Dictionary<string, object?>
+            {
+                var instance = new Dictionary<string, object?>
                 {
                     ["objectInfo"] = inst.ObjectInfo,
+                    ["objectTypeRef"] = $"{frm.Handle}:{inst.ObjectInfo}",
                     ["x"] = inst.PositionX,
                     ["y"] = inst.PositionY,
                     ["layer"] = inst.Layer,
                     ["instanceValue"] = inst.InstanceValue,
                     ["parentType"] = inst.ParentType,
                     ["parentHandle"] = inst.ParentHandle,
-                });
+                };
+
+                if (TryGetFrameObject(mfa, frm, inst.ObjectInfo, out ObjectInfo? oi) && oi != null)
+                {
+                    if (!sourceObjects.TryGetValue((int)inst.ObjectInfo, out MFAObjectInfo? source))
+                        source = FindSourceObject(mfa, oi);
+
+                    string objectKey = inst.ObjectInfo.ToString();
+                    if (!frameTypes.ContainsKey(objectKey))
+                        frameTypes[objectKey] = BuildTypeDef(oi, source);
+
+                    instance["objectName"] = oi.Name;
+                    instance["objectType"] = oi.Header.Type;
+                    instance["objectTypeName"] = TypeName(oi.Header.Type);
+                    foreach (var ink in InkOf(oi, source))
+                        instance[ink.Key] = ink.Value;
+                }
+
+                instances.Add(instance);
+            }
 
             return new Dictionary<string, object?>
             {
@@ -938,8 +967,32 @@ namespace Nebula.Tools.GameDumper
                 ["width"] = frm.FrameHeader.Width,
                 ["height"] = frm.FrameHeader.Height,
                 ["objectTypes"] = frameTypes,
+                ["objectTypesScope"] = "frame-authoritative-with-global-fallback",
                 ["instances"] = instances,
             };
+        }
+
+        static Dictionary<int, MFAObjectInfo> SourceObjectsByHandle(Frame frame)
+        {
+            var result = new Dictionary<int, MFAObjectInfo>();
+            foreach (MFAObjectInfo source in frame.MFAFrameInfo.Objects)
+                result[source.Handle] = source;
+            return result;
+        }
+
+        static MFAObjectInfo? FindSourceObject(MFAPackageData mfa, ObjectInfo oi)
+        {
+            foreach (Frame frame in mfa.Frames)
+            {
+                if (!frame.FrameObjectItems.TryGetValue(oi.Header.Handle, out ObjectInfo? local)
+                    || !ReferenceEquals(local, oi))
+                    continue;
+
+                foreach (MFAObjectInfo source in frame.MFAFrameInfo.Objects)
+                    if (source.Handle == oi.Header.Handle)
+                        return source;
+            }
+            return null;
         }
 
         /// <summary>
@@ -1404,15 +1457,15 @@ namespace Nebula.Tools.GameDumper
             ["a"] = 255,
         };
 
-        static Dictionary<string, object?> InkOf(ObjectInfo oi) => new()
+        static Dictionary<string, object?> InkOf(ObjectInfo oi, MFAObjectInfo? source = null) => new()
         {
-            ["inkEffect"] = oi.Header.InkEffect,
-            ["inkEffectName"] = InkEffectName(oi.Header.InkEffect),
-            ["inkEffectParam"] = oi.Header.InkEffectParam,
+            ["inkEffect"] = source?.InkEffect ?? oi.Header.InkEffect,
+            ["inkEffectName"] = InkEffectName(source?.InkEffect ?? oi.Header.InkEffect),
+            ["inkEffectParam"] = source?.InkEffectParameter ?? oi.Header.InkEffectParam,
             ["blendCoeff"] = oi.Header.BlendCoeff,
             ["rgbCoeff"] = Rgb(oi.Header.RGBCoeff),
-            ["transparent"] = !oi.Header.InkEffectFlags["NotTransparent"],
-            ["antiAliasing"] = oi.Header.InkEffectFlags["AntiAliasing"],
+            ["transparent"] = source?.Transparent ?? !oi.Header.InkEffectFlags["NotTransparent"],
+            ["antiAliasing"] = source?.AntiAliasing ?? oi.Header.InkEffectFlags["AntiAliasing"],
         };
 
         static Dictionary<string, object?> LayerEffectOf(FrameLayerEffect effect) => new()
