@@ -67,8 +67,13 @@ WriteSpriteIndex(spritesDir)           // → sprites/index.json
   - `objectTypes`: 仅为兼容旧消费者保留的 `handle` → 对象类型表。MFA 会在不同帧复用 handle，因此解析实例时不可使用此全局表；应以 `frames[].objectTypes` 和实例内嵌字段为准。
     - `type`: `0=QuickBackdrop 1=Backdrop 2=Active 3=String 4=Question 5=Score 6=Lives 7=Counter 8=FormattedText 9=SubApplication ≥32=Extension`
     - `animations[]`: `{ id, name, directions[]{ index, minSpeed, maxSpeed, repeat, repeatFrame, frames[] } }`
+    - InAndOut movement `direction` is an angle in degrees (`0=Right`, `90=Top`, `180=Left`, `270=Bottom`); `inAndOutType` is `0=Linear`, `1=Smooth`. Its legacy `speed` field contains duration in milliseconds.
+    - `followFrame`: boolean for objects with common properties (Active, String, Counter, extensions, etc.), equal to `!DontFollowFrame`; exported in both object type tables and instance metadata. Backdrops do not have this property.
+    - `createAtStart`: boolean for objects with common properties, true when bit 17 (`DontCreateAtStart`, named `CreateAtStart` in the MFA loader) is clear; exported in both object type tables and instance metadata. Backdrop and QuickBackdrop do not have this property.
+    - `fineDetection`: boolean for objects with common properties, equal to `!DontUseFineDetection` from `newObjectFlags`; exported in both object type tables and instance metadata. These objects do not export `collisionWithBox`.
+    - `collisionWithBox`: boolean only for Backdrop and QuickBackdrop, equal to `CollisionType != 0`; exported in both object type tables and instance metadata. Replaces the numeric `collisionType` field; these objects do not export `fineDetection`.
   - `frames[]`: `{ name, handle, width, height, objectTypesScope: "frame-authoritative-with-global-fallback", objectTypes{}, instances[] }`
-    - 每个实例内嵌当前帧对象的 `objectTypeRef`、`objectName`、`objectType`、`objectTypeName`、`inkEffect`、`inkEffectName`、`inkEffectParam`、`blendCoeff`、`rgbCoeff`、`transparent`、`antiAliasing`，并保留位置字段 `objectInfo`、`x`、`y`、`layer`、`instanceValue`、`parentType`、`parentHandle`。这些内嵌属性始终以当前帧的对象定义为准。
+    - 每个实例内嵌当前帧对象的 `objectTypeRef`、`objectName`、`objectType`、`objectTypeName`、`inkEffect`、`inkEffectName`、`inkEffectParam`、`blendCoeff`、`rgbCoeff`、`transparent`，并保留位置字段 `objectInfo`、`x`、`y`、`layer`、`instanceValue`、`parentType`、`parentHandle`。这些内嵌属性始终以当前帧的对象定义为准。
     - 实例的 `x/y` 就是 CTF 的 **hot spot 坐标**（原始像素，1:1 可直接使用）
     - `parentType != 0` = MFA 的**假实例**（Fake Instance / `CreateOnly`：对象被事件引用但没摆到场上，坐标恒为 0,0）。
       Nebula 自己的帧预览（`Nebula.Core/Utilities/Utilities.cs`）同样会跳过它们，下游默认也跳过。
@@ -127,7 +132,7 @@ WriteSpriteIndex(spritesDir)           // → sprites/index.json
 按 IR 的引用关系，把 IR 里的贴图素材再整理一份**人类可读**的副本，方便导入 Godot 时判断"哪些是全局资源、哪些是这关独有的"：
 
 - 图片：被 **≥2 关**引用 → `shared/`；只被 1 关引用 → 该关目录的 `assets/`；
-- 精灵：同理 → `shared_sprites/` 或该关的 `sprites/`；
+- 精灵：各关的 `sprites/` 原样保留；目录名及内容（JSON + PNG）相同且被 **≥2 关**引用的图集复制到 `shared_sprites/<对象>__<hash16>/`；同名不同内容不会合并。兼容旧版根目录 `sprites/`；
 - 文件名 = `<对象名|背景_WxH>__<hash8>.png`（hash8 是原文件名 `img_<hash16>` 的前 8 位，可回源；同名冲突自动补全 hash16，文件名限长 120）；
 - **只做复制**：原 `assets/` 与 `sprites/` 原样保留，下游引用零影响；重复运行幂等（覆盖写）。
 
@@ -135,9 +140,11 @@ WriteSpriteIndex(spritesDir)           // → sprites/index.json
 
 - 单独的 exe 项目（`AssemblyName = mfspL-cli`），**没有加进 `Nebula.sln`**（保持上游 sln 原样），
   直接 `dotnet build Nebula.Tools/MFSPLCli/MFSPLCli.csproj` 或 `dotnet run --project` 即可。
-- 支持传**单个 .mfa** 或**一个目录**（递归找 `*.mfa`）；跨关卡共享 `assets/`（按内容哈希去重）、
-  共享 `sprites/`（按对象内容指纹去重）；每关处理完做一次 GC / 大对象堆压缩（MFA 解析很吃内存）；
+- 支持传**单个 .mfa** 或**一个目录**（递归找 `*.mfa`）；每个 MFA 的 JSON、`assets/` 和 `sprites/`
+  都放在 `<out>/<mfa 文件名>/` 内，素材只在该 MFA 内去重；每关处理完做一次 GC / 大对象堆压缩；
   并静默 Nebula 的 Spectre 控制台日志（"Unknown Chunk" 之类刷屏），只保留自己的进度输出。
+- 不同名字的 MFA 可以在不同 CLI 会话中导出到同一个 `-o`，不会覆盖彼此的素材或精灵索引。
+  同名 MFA（不含扩展名，Windows 不区分大小写）仍指向同一个目录；需要不同输出根目录或先重命名。
 
 > **为什么全部做成"新增文件"？** 这样上游后续提交可以随时 rebase / 重新拉取，
 > 冲突面为零——新增部分只依赖上游的公开类型（`MFAPackageData`、`FrameInstances`、`ImageBank`、`INebulaTool` 等）。
@@ -174,9 +181,9 @@ Usage: mfspL-cli <mfa-file-or-dir> [-o <output-dir>]
 |---|---|
 | `<mfa-file-or-dir>` | 单个 `.mfa` 或一个目录（递归查找 `*.mfa`，按路径排序处理） |
 | `-o, --out <dir>` | IR 输出根目录。默认 `./mfspl_ir`（相对**当前工作目录**）。每个 mfa 输出到 `<out>/<mfa 文件名>/` |
-| `--godot <dir>` | 额外产出 Godot `SpriteFrames`（`.tres`）到该目录（**绝对路径**），每个对象一个子目录 |
+| `--godot <dir>` | 额外产出 Godot `SpriteFrames`（`.tres`）到 `<dir>/<mfa 文件名>/<对象>/`（**绝对路径**），各 MFA 相互独立 |
 | `--godot-res <p>` | `.tres` 里 `res://` 前缀（默认 `res://mfspl/sprite/ctf`），要指向 Godot 工程内的相对位置 |
-| `--godot-only` | **跳过 MFA 解析**，用已有的 `<out>/sprites` 重发 SpriteFrames（改前缀 / 改镜像阈值后重跑很快） |
+| `--godot-only` | **跳过 MFA 解析**，用已有的 `<out>/<mfa>/sprites` 重发 SpriteFrames；没有这种目录时兼容旧的 `<out>/sprites` |
 | `--tiles-godot <dir>` | 额外产出 Godot 瓦片数据（`tilemap.json` / `tileset.tres` / `tilemap.tscn`）到该目录（**绝对路径**） |
 | `--tiles-godot-res <p>` | 瓦片资源的 `res://` 前缀（默认 `res://mfspl/stage_ctf`） |
 | `--tiles-only` | **跳过 MFA 解析**，用已有的 `<out>/<关卡>/tiles.json` 重发瓦片数据 |
@@ -212,10 +219,10 @@ Found 1 .mfa file(s). Output → ...\mfspl_ir
 [1/1] Story-1_LTEv1.3.3.mfa OK — frames=7, objects=106, images=140 (+3 dup), sounds=6 (+0 dup),
       sheets=29 (+0 dup), tiles=1612
 Done. OK=1, FAILED=0. Output → ...\mfspl_ir
-Assets: 140 unique images, 6 unique sounds → ...\mfspl_ir\assets
-Spritesheets: 29 sheets (+0 dup) → ...\mfspl_ir\sprites
+Assets: 140 unique images, 6 unique sounds → per-MFA assets/
+Spritesheets: 29 sheets (+0 dup) → per-MFA sprites/
 Tiles: 1612 backdrop rects → per-level tiles.json
-Godot SpriteFrames: 29 objects, 29 animations → ...\project\mfspl\sprite\ctf
+Godot SpriteFrames: 29 objects, 29 animations → ...\project\mfspl\sprite\ctf\Story-1_LTEv1.3.3
   tile→ Story-1_LTEv1.3.3: 7 frames, 1765 cells, 5 statics, 0 conflicts
 Godot tiles: 1 levels OK (0 failed) → ...\project\mfspl\stage_ctf [cells=1765, statics=5, backgrounds=10, conflicts=0]
 ```
@@ -249,27 +256,28 @@ dotnet ...\mfspL-cli.dll -o "...\mfspl_ir" --archive
 
 ```
 <out>/                                   IR 根目录（-o）
-├─ assets/                               ★跨关卡共享：按内容去重的图片/音频
-│   ├─ img_<hash16>.png
-│   └─ snd_<hash16>.wav|ogg|mp3|aiff
-├─ sprites/                              ★跨关卡共享：对象动画图集
-│   ├─ index.json                        对象名 → [目录名...]（同名不同内容会有 __<hash8> 变体）
-│   └─ <对象名>/
-│       ├─ a<动画号>_d<方向号>.png        该方向所有帧横排（顺序=原样）
-│       └─ sheet.json                    每帧矩形 + hotspot + actionPoint + minSpeed/maxSpeed/repeat
 ├─ <关卡名>/                              每个 .mfa 一个目录
 │   ├─ objects.json                      对象类型 + 每帧实例（x/y/layer/parentType…）
 │   ├─ events.json                       全局事件 + 每帧事件 + 跨帧指纹去重表
-│   ├─ images.json / sounds.json         句柄 → 文件 + 元数据
-│   └─ tiles.json                        backdrop 实例原始矩形
-├─ shared/  shared_sprites/              --archive 产出：被 ≥2 关引用的素材
-└─ <关卡名>/assets/  <关卡名>/sprites/     --archive 产出：该关独有的素材
+│   ├─ images.json / sounds.json         句柄 → 本目录 assets/ 内的文件 + 元数据
+│   ├─ tiles.json                        backdrop 实例原始矩形
+│   ├─ layers.json                       每帧图层名称及滚动系数
+│   ├─ assets/                           本 MFA 内按内容去重的图片/音频
+│   │   ├─ img_<hash16>.png
+│   │   └─ snd_<hash16>.wav|ogg|mp3|aiff
+│   └─ sprites/                          本 MFA 的对象动画图集
+│       ├─ index.json                    对象名 → [目录名...]
+│       └─ <对象名>/
+│           ├─ a<动画号>_d<方向号>.png    该方向所有帧横排（顺序=原样）
+│           └─ sheet.json                帧矩形 + hotspot + actionPoint + 速度/重复设置
+└─ shared/  shared_sprites/              --archive 产出：被 ≥2 关引用的相同素材副本
 
 <godot-sprite-dir>/                       --godot 产出（可直接放进 Godot 工程）
-└─ <对象名>/
-    ├─ <对象名>.tres                      SpriteFrames（AtlasTexture 切帧；speed=50）
-    ├─ a<动画号>_d<方向号>.png             被保留的方向（镜像方向已丢弃）
-    └─ offset.json                        hotspot→Sprite2D.offset、mirrored、minSpeed/maxSpeed
+└─ <mfa 文件名>/
+    └─ <对象名>/
+        ├─ <对象名>.tres                  SpriteFrames（AtlasTexture 切帧；speed=50）
+        ├─ a<动画号>_d<方向号>.png         被保留的方向（镜像方向已丢弃）
+        └─ offset.json                    hotspot→Sprite2D.offset、mirrored、minSpeed/maxSpeed
 
 <godot-tile-dir>/                         --tiles-godot 产出（可直接放进 Godot 工程）
 └─ <关卡名>/

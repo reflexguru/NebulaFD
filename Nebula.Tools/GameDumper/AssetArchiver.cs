@@ -1,13 +1,14 @@
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 
 namespace Nebula.Tools.GameDumper
 {
     /// <summary>
     /// 将已导出的 IR（mfspl_ir/）里的全部贴图素材按「公共 / 独有」归档，供导入 Godot 作为参考。
     /// - 图片（assets/img_&lt;hash&gt;.png）：按每关 images.json 的 file 引用统计，被 ≥2 关引用 → shared/，仅 1 关 → 该关 assets/
-    /// - 精灵（sprites/&lt;对象&gt;/）：按每关 objects.json 的 objectTypes 统计对象名，被 ≥2 关引用 → shared_sprites/，仅 1 关 → 该关 sprites/
-    /// 归档只做「复制新增」：原 assets/ 与 sprites/ 原样保留，下游引用零影响；重复运行幂等（同名覆盖写）。
+    /// - 精灵（&lt;关卡&gt;/sprites/&lt;对象&gt;/）：相同目录名及内容被 ≥2 关引用 → shared_sprites/，仅 1 关保留在本地。
+    /// 兼容旧版根目录 sprites/。归档只做复制：原 assets/ 与 sprites/ 保留，下游引用不变；重复运行幂等。
     /// 文件名用中文（对象名 + __hash8）增强人类可读性；无对象引用的图用 背景_WxH__hash8。hash8 是原 hash16 的前 8 位，可回源到 assets/。
     /// </summary>
     public class AssetArchiver
@@ -26,7 +27,6 @@ namespace Nebula.Tools.GameDumper
         public static Result Run(string outputRoot)
         {
             var result = new Result();
-            string assetDir = Path.Combine(outputRoot, "assets");
             string spritesDir = Path.Combine(outputRoot, "sprites");
             string sharedDir = Path.Combine(outputRoot, "shared");
             string sharedSpritesDir = Path.Combine(outputRoot, "shared_sprites");
@@ -39,6 +39,7 @@ namespace Nebula.Tools.GameDumper
 
             // ---------- 1. 图片引用统计（hash 文件名 → 引用关卡，同关去重） ----------
             var imgRefLevels = new Dictionary<string, HashSet<string>>();
+            var imgSources = new Dictionary<string, string>();
             var imgSize = new Dictionary<string, (int w, int h)>();
             foreach (var level in levelDirs)
             {
@@ -50,8 +51,10 @@ namespace Nebula.Tools.GameDumper
                     var entry = prop.Value;
                     string? file = entry.TryGetProperty("file", out var fp) ? fp.GetString() : null;
                     if (string.IsNullOrEmpty(file)) continue;
-                    string filename = Path.GetFileName(Path.GetFullPath(Path.Combine(level, file)));
+                    string source = Path.GetFullPath(Path.Combine(level, file));
+                    string filename = Path.GetFileName(source);
                     if (string.IsNullOrEmpty(filename)) continue;
+                    if (File.Exists(source)) imgSources[filename] = source;
 
                     if (seen.Add(filename))
                     {
@@ -144,8 +147,7 @@ namespace Nebula.Tools.GameDumper
             foreach (var kv in imgRefLevels)
             {
                 string filename = kv.Key;
-                string src = Path.Combine(assetDir, filename);
-                if (!File.Exists(src)) { result.SkippedImages++; continue; }
+                if (!imgSources.TryGetValue(filename, out var src)) { result.SkippedImages++; continue; }
 
                 string stem = Path.GetFileNameWithoutExtension(filename);
                 string hash16 = stem.Length > 4 ? stem[4..] : stem;
@@ -199,6 +201,45 @@ namespace Nebula.Tools.GameDumper
                 }
             }
 
+            // New exports already own their sprites. Only copy identical sheets shared by
+            // multiple MFAs; same-named sheets with different content stay independent.
+            var localSheets = new Dictionary<string, List<(string Level, string Source)>>();
+            foreach (var level in levelDirs)
+            {
+                string localSprites = Path.Combine(level, "sprites");
+                string localIndex = Path.Combine(localSprites, "index.json");
+                if (!File.Exists(localIndex)) continue;
+                using var doc = JsonDocument.Parse(File.ReadAllText(localIndex));
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                    foreach (var dirEl in prop.Value.EnumerateArray())
+                    {
+                        string d = dirEl.GetString() ?? "";
+                        if (string.IsNullOrEmpty(d)) continue;
+                        string src = Path.Combine(localSprites, d);
+                        string sheet = Path.Combine(src, "sheet.json");
+                        if (!File.Exists(sheet)) { result.SkippedSprites++; continue; }
+                        using var contentHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                        foreach (string sheetFile in Directory.GetFiles(src).OrderBy(f => f, StringComparer.Ordinal))
+                        {
+                            contentHash.AppendData(Encoding.UTF8.GetBytes(Path.GetFileName(sheetFile)));
+                            contentHash.AppendData(File.ReadAllBytes(sheetFile));
+                        }
+                        string hash = Convert.ToHexString(contentHash.GetHashAndReset()).ToLowerInvariant();
+                        string key = d + "__" + hash[..16];
+                        if (!localSheets.TryGetValue(key, out var sources))
+                            localSheets[key] = sources = new();
+                        sources.Add((level, src));
+                    }
+            }
+            foreach (var kv in localSheets)
+            {
+                bool shared = kv.Value.Select(s => s.Level).Distinct().Count() >= 2;
+                if (shared)
+                    result.CopiedBytes += CopyDirectory(kv.Value[0].Source, Path.Combine(sharedSpritesDir, kv.Key));
+                if (shared) result.SharedSprites++; else result.LevelSprites++;
+            }
+
+            // Legacy exports used a single sprites directory at the IR root.
             var indexPath = Path.Combine(spritesDir, "index.json");
             if (Directory.Exists(spritesDir) && File.Exists(indexPath))
             {
@@ -250,6 +291,8 @@ namespace Nebula.Tools.GameDumper
 
         static long CopyDirectory(string srcDir, string dstDir)
         {
+            if (string.Equals(Path.GetFullPath(srcDir), Path.GetFullPath(dstDir), StringComparison.OrdinalIgnoreCase))
+                return 0;
             Directory.CreateDirectory(dstDir);
             long bytes = 0;
             foreach (var file in Directory.GetFiles(srcDir))

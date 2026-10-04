@@ -67,6 +67,19 @@ namespace Nebula.Tools.GameDumper
         }
 
         /// <summary>
+        /// Exports self-contained media alongside an MFA's IR manifests. Deduplication is local
+        /// to this MFA so another export/session cannot skip its files or overwrite its sheets.
+        /// </summary>
+        public static (AssetExportResult Assets, SpritesheetResult Sprites) ExportResources(MFAPackageData mfa, string outputDir)
+        {
+            var assets = ExportAssets(mfa, outputDir, Path.Combine(outputDir, "assets"));
+            string spritesDir = Path.Combine(outputDir, "sprites");
+            var sprites = ExportSpritesheets(mfa, spritesDir);
+            WriteSpriteIndex(spritesDir);
+            return (assets, sprites);
+        }
+
+        /// <summary>
         /// Dumps ImageBank (PNG) and SoundBank (audio) as one flat asset folder, deduplicating by content
         /// hash so identical assets are written only once. Per-handle metadata (hotspot / action point /
         /// dimensions / name) is preserved in images.json + sounds.json so the dedup never loses the
@@ -843,7 +856,7 @@ namespace Nebula.Tools.GameDumper
                 {
                     case ObjectQuickBackdrop qb:
                         d["obstacleType"] = qb.ObstacleType;
-                        d["collisionType"] = qb.CollisionType;
+                        d["collisionWithBox"] = qb.CollisionType != 0;
                         d["width"] = qb.Width;
                         d["height"] = qb.Height;
                         d["shape"] = qb.Shape.ShapeType;
@@ -864,10 +877,13 @@ namespace Nebula.Tools.GameDumper
                         break;
                     case ObjectBackdrop bd:
                         d["obstacleType"] = bd.ObstacleType;
-                        d["collisionType"] = bd.CollisionType;
+                        d["collisionWithBox"] = bd.CollisionType != 0;
                         d["image"] = bd.Image;
                         break;
                     case ObjectCommon oc:
+                        d["createAtStart"] = CreateAtStartOf(oc);
+                        d["followFrame"] = !oc.ObjectFlags["DontFollowFrame"];
+                        d["fineDetection"] = !oc.NewObjectFlags["DontUseFineDetection"];
                         d["newObjectFlags"] = oc.NewObjectFlags.Value;
                         d["qualifiers"] = oc.Qualifiers;
                         d["alterableValues"] = new Dictionary<string, object?>
@@ -953,6 +969,16 @@ namespace Nebula.Tools.GameDumper
                     instance["objectName"] = oi.Name;
                     instance["objectType"] = oi.Header.Type;
                     instance["objectTypeName"] = TypeName(oi.Header.Type);
+                    if (oi.Properties is ObjectCommon oc)
+                    {
+                        instance["createAtStart"] = CreateAtStartOf(oc);
+                        instance["followFrame"] = !oc.ObjectFlags["DontFollowFrame"];
+                        instance["fineDetection"] = !oc.NewObjectFlags["DontUseFineDetection"];
+                    }
+                    else if (oi.Properties is ObjectQuickBackdrop qb)
+                        instance["collisionWithBox"] = qb.CollisionType != 0;
+                    else if (oi.Properties is ObjectBackdrop bd)
+                        instance["collisionWithBox"] = bd.CollisionType != 0;
                     foreach (var ink in InkOf(oi, source))
                         instance[ink.Key] = ink.Value;
                 }
@@ -1457,6 +1483,10 @@ namespace Nebula.Tools.GameDumper
             ["a"] = 255,
         };
 
+        // Bit 17 means "don't create at start". MFA uses the misleading key
+        // "CreateAtStart" for that same bit, and its BitDict is copied unchanged.
+        static bool CreateAtStartOf(ObjectCommon oc) => (oc.ObjectFlags.Value & (1u << 17)) == 0;
+
         static Dictionary<string, object?> InkOf(ObjectInfo oi, MFAObjectInfo? source = null) => new()
         {
             ["inkEffect"] = source?.InkEffect ?? oi.Header.InkEffect,
@@ -1465,7 +1495,6 @@ namespace Nebula.Tools.GameDumper
             ["blendCoeff"] = oi.Header.BlendCoeff,
             ["rgbCoeff"] = Rgb(oi.Header.RGBCoeff),
             ["transparent"] = source?.Transparent ?? !oi.Header.InkEffectFlags["NotTransparent"],
-            ["antiAliasing"] = source?.AntiAliasing ?? oi.Header.InkEffectFlags["AntiAliasing"],
         };
 
         static Dictionary<string, object?> LayerEffectOf(FrameLayerEffect effect) => new()
@@ -1615,43 +1644,35 @@ namespace Nebula.Tools.GameDumper
         {
             var d = new Dictionary<string, object?>();
             int[] ints = ReadMovementExtInts(data);
-            if (ints.Length < 1)
+            if (ints.Length < 4)
                 return d;
 
-            int flags = ints.Length > 0 ? ints[0] : 0;
+            // After the version byte: interpolation type, angle in degrees,
+            // duration in milliseconds, flags, destination X, destination Y.
+            int flags = ints[3];
             d["flags"] = flags;
-            d["movingAtStart"] = (flags & 1) != 0;
-            if (ints.Length > 2)
-                d["speed"] = ints[2];
-            if (ints.Length > 3)
+            d["movingAtStart"] = (flags & 2) != 0;
+            d["speed"] = ints[2];
+            d["inAndOutType"] = ints[0];
+            d["inAndOutTypeName"] = ints[0] switch
             {
-                d["inAndOutType"] = ints[3];
-                d["inAndOutTypeName"] = ints[3] switch
-                {
-                    0 => "Move In",
-                    1 => "Move Out",
-                    2 => "Move In and Out",
-                    3 => "Appears",
-                    4 => "Disappears",
-                    _ => "Unknown",
-                };
-            }
-            if (ints.Length > 4)
+                0 => "Linear",
+                1 => "Smooth",
+                _ => "Unknown",
+            };
+            d["direction"] = ints[1];
+            d["directionName"] = ints[1] switch
             {
-                d["direction"] = ints[4];
-                d["directionName"] = ints[4] switch
-                {
-                    0 => "Left",
-                    1 => "Right",
-                    2 => "Top",
-                    3 => "Bottom",
-                    4 => "Top-Left",
-                    5 => "Top-Right",
-                    6 => "Bottom-Left",
-                    7 => "Bottom-Right",
-                    _ => "Custom",
-                };
-            }
+                0 => "Right",
+                45 => "Top-Right",
+                90 => "Top",
+                135 => "Top-Left",
+                180 => "Left",
+                225 => "Bottom-Left",
+                270 => "Bottom",
+                315 => "Bottom-Right",
+                _ => "Custom",
+            };
             return d;
         }
 

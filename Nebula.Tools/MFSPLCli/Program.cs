@@ -58,16 +58,16 @@ for (int i = 0; i < args.Length; i++)
         case "--help":
             Console.WriteLine("Usage: mfspL-cli <mfa-file-or-dir> [-o <output-dir>] [--godot <dir> [--godot-res <resPath>]] [--tiles-godot <dir> [--tiles-godot-res <resPath>]]");
             Console.WriteLine("  Exports objects.json + events.json + images.json + sounds.json + tiles.json for each .mfa");
-            Console.WriteLine("  into <output-dir>/<level>/; deduplicated images & sounds go to <output-dir>/assets/,");
-            Console.WriteLine("  and per-object sprite sheets go to <output-dir>/sprites/.");
-            Console.WriteLine("  --godot <dir>          emit Godot SpriteFrames .tres into <dir> (absolute path).");
+            Console.WriteLine("  into <output-dir>/<mfa>/, alongside assets/ and sprites/ (deduplicated within each MFA).");
+            Console.WriteLine("  Different MFA names keep their exports independent across CLI sessions.");
+            Console.WriteLine("  --godot <dir>          emit Godot SpriteFrames .tres into <dir>/<mfa>/ (absolute path).");
             Console.WriteLine("  --godot-res <p>        res:// prefix for SpriteFrames (default res://mfspl/sprite/ctf).");
-            Console.WriteLine("  --godot-only           skip MFA parsing; re-emit Godot SpriteFrames from existing -o/sprites.");
+            Console.WriteLine("  --godot-only           skip MFA parsing; re-emit SpriteFrames from -o/<mfa>/sprites (legacy -o/sprites supported).");
             Console.WriteLine("  --tiles-godot <dir>    emit per-frame Godot tilemaps into <dir>/<mfa>/frames/<frame>/.");
             Console.WriteLine("  --tiles-godot-res <p>  res:// prefix for tile assets (default res://mfspl/stage_ctf).");
             Console.WriteLine("  --tiles-only           skip MFA parsing; re-emit Godot tile data from existing -o tiles.json.");
             Console.WriteLine("  --archive              archive shared vs per-level assets (images + sprites) into -o; copies only, idempotent.");
-    Console.WriteLine("  --layers-only          only emit layers.json (layer names + scroll coefficients) from the MFA sources.");
+            Console.WriteLine("  --layers-only          only emit layers.json (layer names + scroll coefficients) from the MFA sources.");
             Console.WriteLine("  --ir-only              objects.json + events.json + tiles.json + layers.json (no assets/sprites).");
             return 0;
         default:
@@ -88,9 +88,17 @@ if (archive)
 if (godotOnly)
 {
     if (godotAbs == null) { Console.WriteLine("--godot-only requires --godot <dir>"); return 2; }
-    string godotSpritesDir = Path.Combine(outputRoot, "sprites");
-    if (!Directory.Exists(godotSpritesDir)) { Console.WriteLine("sprites dir not found: " + godotSpritesDir); return 3; }
-    var gres = GodotSpriteFramesExporter.Export(godotSpritesDir, godotAbs, godotRes);
+    if (!Directory.Exists(outputRoot)) { Console.WriteLine("output dir not found: " + outputRoot); return 3; }
+    var spriteLevels = Directory.GetDirectories(outputRoot)
+        .Where(d => File.Exists(Path.Combine(d, "objects.json")) && Directory.Exists(Path.Combine(d, "sprites")))
+        .OrderBy(d => d, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    if (spriteLevels.Count > 0) return ExportGodotSprites(spriteLevels) ? 0 : 3;
+
+    // Existing exports made before assets/sprites moved into each MFA directory.
+    string legacySpritesDir = Path.Combine(outputRoot, "sprites");
+    if (!Directory.Exists(legacySpritesDir)) { Console.WriteLine("sprites dirs not found under: " + outputRoot); return 3; }
+    var gres = GodotSpriteFramesExporter.Export(legacySpritesDir, godotAbs, godotRes);
     Console.WriteLine($"Godot SpriteFrames: {gres.Objects} objects, {gres.Animations} animations → {godotAbs}");
     return 0;
 }
@@ -150,14 +158,9 @@ else
 
 Console.WriteLine($"Found {files.Count} .mfa file(s). Output → {outputRoot}");
 
-// 共享资源池：跨关卡按内容哈希去重，图片/声音只写一份到 assets/
-string assetDir = Path.Combine(outputRoot, "assets");
-var imagePool = new Dictionary<string, string>();
-var soundPool = new Dictionary<string, string>();
-
-// 精灵表：跨关卡按内容指纹去重，同名对象只生成一份
-string spritesDir = Path.Combine(outputRoot, "sprites");
-var sheetIndex = new Dictionary<string, string>();
+// Each MFA owns its assets, sprites and deduplication pools, including across CLI sessions.
+var exportedLevels = new List<string>();
+int totalImages = 0, totalSounds = 0;
 int totalSheets = 0, totalSkipped = 0;
 int totalTiles = 0;
 int totalLayers = 0;
@@ -196,8 +199,10 @@ for (int i = 0; i < files.Count; i++)
             ok++;
             continue;
         }
-        var assets = MFSPLExporter.ExportAssets(mfa, outDir, assetDir, imagePool, soundPool);
-        var sprites = MFSPLExporter.ExportSpritesheets(mfa, spritesDir, sheetIndex);
+        var (assets, sprites) = MFSPLExporter.ExportResources(mfa, outDir);
+        exportedLevels.Add(outDir);
+        totalImages += assets.Images;
+        totalSounds += assets.Sounds;
         totalSheets += sprites.Sheets;
         totalSkipped += sprites.Skipped;
 
@@ -231,18 +236,15 @@ if (irOnly)
     return fail == 0 ? 0 : 3;
 }
 
-MFSPLExporter.WriteSpriteIndex(spritesDir);
-
 Console.WriteLine($"Done. OK={ok}, FAILED={fail}. Output → {outputRoot}");
-Console.WriteLine($"Assets: {imagePool.Count} unique images, {soundPool.Count} unique sounds → {assetDir}");
-Console.WriteLine($"Spritesheets: {totalSheets} sheets (+{totalSkipped} dup) → {spritesDir}");
+Console.WriteLine($"Assets: {totalImages} unique images, {totalSounds} unique sounds → per-MFA assets/");
+Console.WriteLine($"Spritesheets: {totalSheets} sheets (+{totalSkipped} dup) → per-MFA sprites/");
 Console.WriteLine($"Tiles: {totalTiles} backdrop rects → per-level tiles.json");
 Console.WriteLine($"Layers: {totalLayers} frame layers (scroll coefficients) → per-level layers.json");
 
 if (godotAbs != null)
 {
-    var gres = GodotSpriteFramesExporter.Export(spritesDir, godotAbs, godotRes);
-    Console.WriteLine($"Godot SpriteFrames: {gres.Objects} objects, {gres.Animations} animations → {godotAbs}");
+    if (!ExportGodotSprites(exportedLevels)) fail++;
 }
 
 if (godotTilesAbs != null)
@@ -269,3 +271,25 @@ if (godotTilesAbs != null)
 }
 
 return fail == 0 ? 0 : 3;
+
+bool ExportGodotSprites(IEnumerable<string> levelDirs)
+{
+    bool success = true;
+    foreach (string level in levelDirs)
+    {
+        string levelName = Path.GetFileName(level);
+        string destination = Path.Combine(godotAbs!, levelName);
+        try
+        {
+            var result = GodotSpriteFramesExporter.Export(Path.Combine(level, "sprites"), destination,
+                godotRes.TrimEnd('/') + "/" + levelName);
+            Console.WriteLine($"Godot SpriteFrames: {result.Objects} objects, {result.Animations} animations → {destination}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  sprite FAILED {levelName}: {ex.Message}");
+            success = false;
+        }
+    }
+    return success;
+}
