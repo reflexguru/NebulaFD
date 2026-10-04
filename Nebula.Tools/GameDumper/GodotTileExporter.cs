@@ -103,8 +103,7 @@ namespace Nebula.Tools.GameDumper
                     sourceForImage[handle] = sid;
                 }
 
-                var sourceAtlas = new Dictionary<int, HashSet<(int x, int y)>>();
-                var sourceAtlasObstacle = new HashSet<(int source, int ax, int ay)>();
+                var sourceAtlas = new Dictionary<int, Dictionary<(int x, int y), List<TileVariant>>>();
                 var backgrounds = new List<object?>();
                 var cellMap = new Dictionary<(int cx, int cy), CellEntry>();
                 var statics = new List<object?>();
@@ -117,7 +116,7 @@ namespace Nebula.Tools.GameDumper
 
                     if (tile.IsBackground)
                     {
-                        backgrounds.Add(new Dictionary<string, object?>
+                        backgrounds.Add(WithAppearance(new Dictionary<string, object?>
                         {
                             ["x"] = tile.X, ["y"] = tile.Y, ["w"] = tile.W, ["h"] = tile.H,
                             ["image"] = tile.Image,
@@ -126,7 +125,7 @@ namespace Nebula.Tools.GameDumper
                             ["color1"] = tile.Color1, ["color2"] = tile.Color2,
                             ["obstacle"] = tile.Obstacle,
                             ["object"] = tile.Object, ["layer"] = tile.Layer,
-                        });
+                        }, VariantOf(tile)));
                         result.Backgrounds++;
                         continue;
                     }
@@ -179,16 +178,26 @@ namespace Nebula.Tools.GameDumper
                                 }
                                 sourceForImage.TryGetValue(tile.Image, out int sid);
                                 if (!sourceAtlas.TryGetValue(sid, out var atlasSet))
-                                    sourceAtlas[sid] = atlasSet = new HashSet<(int, int)>();
-                                atlasSet.Add((atlasX, atlasY));
-                                if (tile.Obstacle != 0)
-                                    sourceAtlasObstacle.Add((sid, atlasX, atlasY));
+                                    sourceAtlas[sid] = atlasSet = new();
+                                if (!atlasSet.TryGetValue((atlasX, atlasY), out var variants))
+                                    atlasSet[(atlasX, atlasY)] = variants = new();
+                                var variant = VariantOf(tile);
+                                int alternative = variants.IndexOf(variant);
+                                if (alternative < 0)
+                                {
+                                    alternative = variants.Count;
+                                    // IDs >= 4096 contain Godot's flip/transpose flags.
+                                    if (alternative >= 4096)
+                                        throw new InvalidDataException("Too many alternative tiles for one atlas cell.");
+                                    variants.Add(variant);
+                                }
                                 cellMap[(cx, cy)] = new CellEntry
                                 {
                                     Order = tile.Order,
                                     X = cx, Y = cy,
                                     AtlasX = atlasX, AtlasY = atlasY,
                                     Image = tile.Image, Source = sid,
+                                    Alternative = alternative, Variant = variant,
                                     Obstacle = tile.Obstacle,
                                     Object = tile.Object, Layer = tile.Layer,
                                 };
@@ -207,22 +216,23 @@ namespace Nebula.Tools.GameDumper
 
                 var cells = cellMap.Values
                     .OrderBy(c => c.Y).ThenBy(c => c.X)
-                    .Select(c => (object)new Dictionary<string, object?>
+                    .Select(c => (object)WithAppearance(new Dictionary<string, object?>
                     {
                         ["x"] = c.X, ["y"] = c.Y,
                         ["source"] = c.Source,
+                        ["alternativeTile"] = c.Alternative,
                         ["atlasX"] = c.AtlasX, ["atlasY"] = c.AtlasY,
                         ["image"] = c.Image,
                         ["obstacle"] = c.Obstacle,
                         ["object"] = c.Object, ["layer"] = c.Layer, ["order"] = c.Order,
-                    }).ToList();
+                    }, c.Variant)).ToList();
 
                 string safe = UniqueFrameDir(frame.Name, frame.Handle, usedNames);
                 string frameDir = Path.Combine(framesRoot, safe);
                 Directory.CreateDirectory(frameDir);
                 string frameRes = godotResPath + "/frames/" + safe;
                 var oneFrameDoc = new TilesDoc { App = tilesDoc.App, Frames = new List<FrameTiles> { frame } };
-                WriteTileset(frameDir, godotResPath, imageInfo, sourceForImage, sourceAtlas, sourceAtlasObstacle, oneFrameDoc, assetsOut);
+                WriteTileset(frameDir, godotResPath, imageInfo, sourceForImage, sourceAtlas, oneFrameDoc, assetsOut);
                 WriteScene(frameDir, frameRes, cellMap.Values, statics);
                 result.FrameScenes++;
 
@@ -358,7 +368,7 @@ namespace Nebula.Tools.GameDumper
         static Dictionary<string, object?> BuildStatic(TileJson tile, int x, int y, int w, int h,
             string resFile, int regionX, int regionY, int regionW, int regionH, int? conflictWith)
         {
-            return new Dictionary<string, object?>
+            return WithAppearance(new Dictionary<string, object?>
             {
                 ["x"] = x, ["y"] = y, ["w"] = w, ["h"] = h,
                 ["res"] = resFile,
@@ -367,7 +377,7 @@ namespace Nebula.Tools.GameDumper
                 ["obstacle"] = tile.Obstacle,
                 ["object"] = tile.Object, ["layer"] = tile.Layer,
                 ["order"] = tile.Order, ["conflictWith"] = conflictWith,
-            };
+            }, VariantOf(tile));
         }
 
         /// <summary>
@@ -379,8 +389,7 @@ namespace Nebula.Tools.GameDumper
         /// </summary>
         static void WriteTileset(string godotAbsRoot, string godotResPath,
             Dictionary<uint, ImageInfo> imageInfo, Dictionary<uint, int> sourceForImage,
-            Dictionary<int, HashSet<(int x, int y)>> sourceAtlas,
-            HashSet<(int source, int ax, int ay)> sourceAtlasObstacle,
+            Dictionary<int, Dictionary<(int x, int y), List<TileVariant>>> sourceAtlas,
             TilesDoc doc, string assetsCopyRoot)
         {
             // Rebuild the distinct file → source list, preserving the same ids as sourceForImage.
@@ -397,9 +406,10 @@ namespace Nebula.Tools.GameDumper
             }
 
             var copyFiles = sources.Select(s => s.file).ToHashSet();
-            foreach (var bg in doc.Frames.SelectMany(f => f.Tiles).Where(t => t.IsBackground))
+            // Include textures used exclusively by non-aligned or overlapping fragments.
+            foreach (var tile in doc.Frames.SelectMany(f => f.Tiles))
             {
-                if (imageInfo.TryGetValue(bg.Image, out var bi) && !string.IsNullOrEmpty(bi.File))
+                if (imageInfo.TryGetValue(tile.Image, out var bi) && !string.IsNullOrEmpty(bi.File))
                     copyFiles.Add(bi.File);
             }
             Directory.CreateDirectory(assetsCopyRoot);
@@ -448,15 +458,23 @@ namespace Nebula.Tools.GameDumper
                 sb.AppendLine($"texture = ExtResource(\"{extIdBySource[id]}\")");
                 sb.AppendLine("texture_region_size = Vector2i(32, 32)");
                 if (sourceAtlas.TryGetValue(id, out var atlasSet))
-                    foreach (var (ax, ay) in atlasSet.OrderBy(c => c.y).ThenBy(c => c.x))
+                    foreach (var atlas in atlasSet.OrderBy(c => c.Key.y).ThenBy(c => c.Key.x))
                     {
+                        var (ax, ay) = atlas.Key;
                         sb.AppendLine($"{ax}:{ay}/0 = 0");
-                        // Obstacle tiles get a full-cell collision polygon (matches the manual
-                        // tile_champion-4.tres convention: -16..16 centered on the 32px cell).
-                        if (sourceAtlasObstacle.Contains((id, ax, ay)))
+                        for (int alternative = 0; alternative < atlas.Value.Count; alternative++)
                         {
-                            sb.AppendLine($"{ax}:{ay}/0/physics_layer_0/polygon_0/points = PackedVector2Array(-16, -16, 16, -16, 16, 16, -16, 16)");
-                            sb.AppendLine($"{ax}:{ay}/0/physics_layer_0/polygon_0/one_way = false");
+                            var variant = atlas.Value[alternative];
+                            string prefix = $"{ax}:{ay}/{alternative}";
+                            if (alternative != 0)
+                                sb.AppendLine($"{prefix} = {alternative}");
+                            sb.AppendLine($"{prefix}/modulate = {GodotColor(variant.Modulate)}");
+                            // Collision belongs to this variant, not every use of the sprite.
+                            if (variant.Obstacle != 0)
+                            {
+                                sb.AppendLine($"{prefix}/physics_layer_0/polygon_0/points = PackedVector2Array(-16, -16, 16, -16, 16, 16, -16, 16)");
+                                sb.AppendLine($"{prefix}/physics_layer_0/polygon_0/one_way = false");
+                            }
                         }
                     }
                 sb.AppendLine();
@@ -544,7 +562,7 @@ namespace Nebula.Tools.GameDumper
                 bool hasTex = !string.IsNullOrEmpty(res);
 
                 tscn.AppendLine($"[node name=\"static_{si}\" type=\"StaticBody2D\" parent=\".\"]");
-                tscn.AppendLine($"position = Vector2({x + w * 0.5}, {y + h * 0.5})");
+                tscn.AppendLine(FormattableString.Invariant($"position = Vector2({x + w * 0.5}, {y + h * 0.5})"));
                 if (obstacle)
                 {
                     tscn.AppendLine();
@@ -556,10 +574,11 @@ namespace Nebula.Tools.GameDumper
                     tscn.AppendLine();
                     tscn.AppendLine($"[node name=\"Sprite\" type=\"Sprite2D\" parent=\"static_{si}\"]");
                     tscn.AppendLine($"texture = ExtResource(\"{texId[res!]}\")");
+                    tscn.AppendLine($"modulate = {GodotColor((float[])s["modulate"]!)}");
                     tscn.AppendLine("centered = false");
                     tscn.AppendLine("region_enabled = true");
                     tscn.AppendLine($"region_rect = Rect2({(int)s["regionX"]}, {(int)s["regionY"]}, {(int)s["regionW"]}, {(int)s["regionH"]})");
-                    tscn.AppendLine($"position = Vector2({-w * 0.5}, {-h * 0.5})");
+                    tscn.AppendLine(FormattableString.Invariant($"position = Vector2({-w * 0.5}, {-h * 0.5})"));
                 }
                 tscn.AppendLine();
                 si++;
@@ -585,7 +604,7 @@ namespace Nebula.Tools.GameDumper
                 WriteS16(ms, c.Source);
                 WriteS16(ms, c.AtlasX);
                 WriteS16(ms, c.AtlasY);
-                WriteS16(ms, 0); // alternative tile
+                WriteS16(ms, c.Alternative);
             }
             return Convert.ToBase64String(ms.ToArray());
         }
@@ -613,6 +632,8 @@ namespace Nebula.Tools.GameDumper
             public int AtlasX, AtlasY;
             public uint Image;
             public int Source;
+            public int Alternative;
+            public TileVariant Variant;
             public uint Obstacle;
             public string Object = "";
             public uint Layer;
@@ -647,7 +668,48 @@ namespace Nebula.Tools.GameDumper
             [JsonPropertyName("objectType")] public int ObjectType { get; set; }
             [JsonPropertyName("layer")] public uint Layer { get; set; }
             [JsonPropertyName("order")] public int Order { get; set; }
+            [JsonPropertyName("inkEffect")] public int InkEffect { get; set; }
+            [JsonPropertyName("inkEffectParam")] public uint InkEffectParam { get; set; }
+            [JsonPropertyName("blendCoeff")] public byte BlendCoeff { get; set; }
+            [JsonPropertyName("rgbCoeff")] public RgbJson RgbCoeff { get; set; } = new();
+            [JsonPropertyName("transparent")] public bool Transparent { get; set; } = true;
         }
+
+        sealed class RgbJson
+        {
+            [JsonPropertyName("r")] public byte R { get; set; } = 255;
+            [JsonPropertyName("g")] public byte G { get; set; } = 255;
+            [JsonPropertyName("b")] public byte B { get; set; } = 255;
+        }
+
+        // Texture deduplication is independent of TileData: the same pixels can have different
+        // ink parameters or collision. Keep raw parameters in the identity, even when two
+        // parameter sets currently produce the same modulation.
+        readonly record struct TileVariant(int InkEffect, uint InkEffectParam, byte BlendCoeff,
+            byte R, byte G, byte B, bool Transparent, uint Obstacle)
+        {
+            public float[] Modulate => new[] { R / 255f, G / 255f, B / 255f,
+                InkEffect == 1 ? 1f - Math.Clamp(InkEffectParam / 128f, 0f, 1f)
+                               : 1f - BlendCoeff / 255f };
+        }
+
+        static TileVariant VariantOf(TileJson tile) => new(tile.InkEffect, tile.InkEffectParam,
+            tile.BlendCoeff, tile.RgbCoeff.R, tile.RgbCoeff.G, tile.RgbCoeff.B,
+            tile.Transparent, tile.Obstacle);
+
+        static Dictionary<string, object?> WithAppearance(Dictionary<string, object?> data, TileVariant variant)
+        {
+            data["inkEffect"] = variant.InkEffect;
+            data["inkEffectParam"] = variant.InkEffectParam;
+            data["blendCoeff"] = variant.BlendCoeff;
+            data["rgbCoeff"] = new RgbJson { R = variant.R, G = variant.G, B = variant.B };
+            data["transparent"] = variant.Transparent;
+            data["modulate"] = variant.Modulate;
+            return data;
+        }
+
+        static string GodotColor(float[] color) => FormattableString.Invariant(
+            $"Color({color[0]}, {color[1]}, {color[2]}, {color[3]})");
 
         static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
         static readonly JsonSerializerOptions JsonOptsIndented = new() { WriteIndented = true };

@@ -235,6 +235,7 @@ namespace Nebula.Tools.GameDumper
             foreach (var frm in mfa.Frames)
             {
                 var tiles = new List<object?>();
+                var sourceObjects = SourceObjectsByHandle(frm);
                 int order = 0;
                 foreach (var inst in frm.FrameInstances.Instances)
                 {
@@ -320,7 +321,9 @@ namespace Nebula.Tools.GameDumper
                         ["layer"] = inst.Layer,
                         ["order"] = order,
                     };
-                    foreach (var ink in InkOf(oi))
+                    if (!sourceObjects.TryGetValue((int)inst.ObjectInfo, out MFAObjectInfo? source))
+                        source = FindSourceObject(mfa, oi);
+                    foreach (var ink in InkOf(oi, source))
                         tile[ink.Key] = ink.Value;
                     if (fillType is 1 or 2 && oi.Properties is ObjectQuickBackdrop qbColors)
                     {
@@ -1492,8 +1495,8 @@ namespace Nebula.Tools.GameDumper
             ["inkEffect"] = source?.InkEffect ?? oi.Header.InkEffect,
             ["inkEffectName"] = InkEffectName(source?.InkEffect ?? oi.Header.InkEffect),
             ["inkEffectParam"] = source?.InkEffectParameter ?? oi.Header.InkEffectParam,
-            ["blendCoeff"] = oi.Header.BlendCoeff,
-            ["rgbCoeff"] = Rgb(oi.Header.RGBCoeff),
+            ["blendCoeff"] = source?.ObjectEffects?.BlendCoeff ?? oi.Header.BlendCoeff,
+            ["rgbCoeff"] = Rgb(source?.ObjectEffects?.RGBCoeff ?? oi.Header.RGBCoeff),
             ["transparent"] = source?.Transparent ?? !oi.Header.InkEffectFlags["NotTransparent"],
         };
 

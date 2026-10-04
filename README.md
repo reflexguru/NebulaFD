@@ -84,6 +84,7 @@ WriteSpriteIndex(spritesDir)           // → sprites/index.json
   - 声音：`{ file, name }`；扩展名按文件魔数判定（RIFF→wav / OggS→ogg / FORM→aiff / ID3、0xFFEx→mp3，其余 wav）
 - **`tiles.json`** — 每帧的 backdrop 实例**原始矩形**（不做任何切分/分类，那是 `GodotTileExporter` 的职责）：
   `{ x, y, w, h, obstacle, image, fillType, color1, color2, isBackground, object, objectType, layer, order }`
+  - 每个 tile 还保留当前帧 MFA objectlist 的 `inkEffect`、`inkEffectParam`、`blendCoeff`、`rgbCoeff`、`transparent`（缺失本帧定义时使用全局 fallback）。
   - `isBackground` = `image == 0` 的全屏 backdrop（纯色/渐变/大图）**或**任一边 > 480px ⇒ 不切分
 - **素材去重** — 图片按 PNG 内容 SHA-256 前 16 hex 命名 `img_<hash16>.png`、声音同理 `snd_<hash16>.<ext>`；
   跨关卡共用一个 `assets/`（CLI 传入共享池）。**同名不同内容**不会互相覆盖。
@@ -119,6 +120,8 @@ WriteSpriteIndex(spritesDir)           // → sprites/index.json
   只有"32 对齐 + 贴图宽高都是 32 的整数倍 + 区域在贴图内"才允许成为 TileMap 单元格，
   否则退化成 StaticBody2D（避免 Godot 的 `Image width 0` 报错）。
 - 同一格被多个图块抢占时：**源顺序靠前者占格**，后来者写成 StaticBody2D 并在 `tilemap.json` 里记录 `conflictWith`。
+- 相同 PNG 仍共用 atlas source；同一 atlas 格的 ink 参数、RGB 系数、transparent 标志或 obstacle 不同时，创建 **alternative tile**。相同参数复用同一 alternative；`cells[].alternativeTile` 与场景内烘焙的 ID 一致，碰撞按 alternative 独立保存。
+- TileData / 碎片 Sprite2D 的 `modulate` 保留 RGB 和透明度：旧 Semi-transparent (`inkEffect == 1`) 的 alpha 为 `1 - clamp(inkEffectParam / 128, 0, 1)`，其余使用 `1 - blendCoeff / 255`。`tilemap.json` 的 cells / staticBodies / backgrounds 同样保留 ink 参数和 `modulate`（RGBA 数组）。旧 IR 没有这些字段时默认不透明白色。
 - 产物（每个关卡一个目录）：
   - **`tileset.tres`** — 每张图一个 `TileSetAtlasSource`（`texture_region_size = 32×32`），只注册地图真正用到的 atlas 格；
     obstacle 格带整格碰撞多边形 `(-16,-16)-(16,16)`。

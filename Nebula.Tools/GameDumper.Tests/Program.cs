@@ -15,6 +15,8 @@ Run("common object flags preserve both states, frame-local handles and global fa
 Run("InAndOut exports degree angles instead of destination coordinates", InAndOutDirectionsAreExported);
 Run("backdrops export collisionWithBox instead of collisionType and exclude common properties", BackdropMetadataIsExported);
 Run("MFA media exports remain self-contained across independent sessions", MfaResourcesAreIndependent);
+Run("tiles use frame-local MFA ink parameters with global fallback", TileExportTests.FrameLocalInk);
+Run("shared tile textures preserve opacity and collision through alternatives", TileExportTests.Alternatives);
 
 return failures.Count == 0 ? 0 : 1;
 
