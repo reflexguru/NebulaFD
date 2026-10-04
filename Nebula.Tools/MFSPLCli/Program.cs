@@ -65,7 +65,7 @@ for (int i = 0; i < args.Length; i++)
             Console.WriteLine("  --godot-only           skip MFA parsing; re-emit SpriteFrames from -o/<mfa>/sprites (legacy -o/sprites supported).");
             Console.WriteLine("  --tiles-godot <dir>    emit per-frame Godot tilemaps into <dir>/<mfa>/frames/<frame>/.");
             Console.WriteLine("  --tiles-godot-res <p>  res:// prefix for tile assets (default res://mfspl/stage_ctf).");
-            Console.WriteLine("  --tiles-only           skip MFA parsing; re-emit Godot tile data from existing -o tiles.json.");
+            Console.WriteLine("  --tiles-only           skip MFA parsing; -o accepts an MFA IR dir or a parent containing MFA dirs.");
             Console.WriteLine("  --archive              archive shared vs per-level assets (images + sprites) into -o; copies only, idempotent.");
             Console.WriteLine("  --layers-only          only emit layers.json (layer names + scroll coefficients) from the MFA sources.");
             Console.WriteLine("  --ir-only              objects.json + events.json + tiles.json + layers.json (no assets/sprites).");
@@ -107,9 +107,19 @@ if (tilesOnly)
 {
     if (godotTilesAbs == null) { Console.WriteLine("--tiles-only requires --tiles-godot <dir>"); return 2; }
     if (!Directory.Exists(outputRoot)) { Console.WriteLine("output dir not found: " + outputRoot); return 3; }
-    var tileDirs = Directory.GetDirectories(outputRoot)
-        .Where(d => File.Exists(Path.Combine(d, "tiles.json")) && File.Exists(Path.Combine(d, "images.json")))
-        .OrderBy(d => d, StringComparer.OrdinalIgnoreCase);
+    // Accept either one MFA directory or the parent containing multiple MFA exports.
+    var tileDirs = File.Exists(Path.Combine(outputRoot, "tiles.json")) &&
+                   File.Exists(Path.Combine(outputRoot, "images.json"))
+        ? new List<string> { Path.TrimEndingDirectorySeparator(outputRoot) }
+        : Directory.GetDirectories(outputRoot)
+            .Where(d => File.Exists(Path.Combine(d, "tiles.json")) && File.Exists(Path.Combine(d, "images.json")))
+            .OrderBy(d => d, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    if (tileDirs.Count == 0)
+    {
+        Console.WriteLine("tile IR dirs not found: expected tiles.json and images.json in or under: " + outputRoot);
+        return 3;
+    }
     int tOk = 0, tFail = 0;
     int cells = 0, statics = 0, backgrounds = 0, conflicts = 0;
     foreach (var d in tileDirs)

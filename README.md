@@ -418,6 +418,13 @@ dotnet mfspL-cli.dll <mfa-file-or-dir> -o <ir-out> \
 # Extra modes: --godot-only | --tiles-only (re-emit from existing IR, seconds) | --archive (shared/per-level asset copies)
 ```
 
+`--tiles-only` accepts either an IR parent (`-o <ir-out>`) or a single MFA directory
+(`-o <ir-out>/<mfa>`). Each selected MFA must contain both `tiles.json` and `images.json`.
+Outputs keep the `<godot-level-dir>/<mfa>/` layout in both cases; no matching input returns exit code 3.
+
+After building, run the CLI regression checks with:
+`python Nebula.Tools/MFSPLCli/tests/tiles_only.py --cli Nebula.Tools/MFSPLCli/bin/Release/net6.0/mfspL-cli.dll`.
+
 See section [3](#3-命令行用法mfspL-cli) for the full option table, examples and real console output (~2.6 s for a 3.4 MB MFA),
 and section [4](#4-导出产物说明) for the exact output layout.
 
