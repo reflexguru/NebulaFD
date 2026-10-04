@@ -12,7 +12,7 @@ var failures = new List<string>();
 Run("frame-local instance metadata wins over a colliding global handle", FrameLocalMetadataWins);
 Run("global fallback metadata remains complete when a frame-local type is missing", GlobalFallbackMetadataIsComplete);
 Run("common object flags preserve both states, frame-local handles and global fallback", CommonObjectFlagsAreExported);
-Run("InAndOut exports degree angles instead of destination coordinates", InAndOutDirectionsAreExported);
+Run("InAndOut exports degree angles, durationMs and destination coordinates", InAndOutDirectionsAreExported);
 Run("backdrops export collisionWithBox instead of collisionType and exclude common properties", BackdropMetadataIsExported);
 Run("MFA media exports remain self-contained across independent sessions", MfaResourcesAreIndependent);
 Run("tiles use frame-local MFA ink parameters with global fallback", TileExportTests.FrameLocalInk);
@@ -216,15 +216,15 @@ void InAndOutDirectionsAreExported()
             writer.Write(direction);
             writer.Write(1500); // Duration in milliseconds
             writer.Write(prefix ? 3 : 1); // Move at start is bit 1, out at start is bit 0
-            writer.Write(772); // Must never be read as the direction
-            writer.Write(-200);
+            writer.Write(prefix ? 772 : 0); // Must never be read as the direction
+            writer.Write(prefix ? -200 : 0);
             movements.Add(new ObjectMovement
             {
                 MovementDefinition = new ObjectMovementExtension { FileName = "InAndOut.mvx", Data = stream.ToArray() },
             });
         }
     }
-    // Actual INTRODUCING payload from SCENKA - EPILOGUE #1:
+    // Actual INTRODUCING payload:
     // type=1, direction=270, duration=500, flags=0, destination=(772, 32).
     movements.Add(new ObjectMovement
     {
@@ -254,14 +254,20 @@ void InAndOutDirectionsAreExported()
             Equal(name, exported[i].GetProperty("directionName").GetString(), "direction name must use degrees rather than an ordinal");
             Equal(i < cases.Length ? 1 : 0, exported[i].GetProperty("inAndOutType").GetInt32(), "movement type must come from the first payload integer");
             Equal(i < cases.Length ? "Smooth" : "Linear", exported[i].GetProperty("inAndOutTypeName").GetString(), "movement type describes interpolation");
-            Equal(1500, exported[i].GetProperty("speed").GetInt32(), "existing duration value must be preserved");
+            Equal(1500, exported[i].GetProperty("durationMs").GetInt32(), "duration must be exported in milliseconds");
+            Equal(false, exported[i].TryGetProperty("speed", out _), "InAndOut duration must not be exported as speed");
+            Equal(i < cases.Length ? 772 : 0, exported[i].GetProperty("destinationX").GetInt32(), "destination X must preserve its original value including zero");
+            Equal(i < cases.Length ? -200 : 0, exported[i].GetProperty("destinationY").GetInt32(), "destination Y must preserve negative values and zero");
             Equal(i < cases.Length ? 3 : 1, exported[i].GetProperty("flags").GetInt32(), "flags must come from the fourth payload integer");
             Equal(i < cases.Length, exported[i].GetProperty("movingAtStart").GetBoolean(), "movingAtStart must use bit 1 independently of out-at-start");
         }
         var introducing = exported[cases.Length * 2];
         Equal(270, introducing.GetProperty("direction").GetInt32(), "INTRODUCING must export 270 degrees, not destination X=772");
         Equal("Bottom", introducing.GetProperty("directionName").GetString(), "INTRODUCING direction must be Bottom");
-        Equal(500, introducing.GetProperty("speed").GetInt32(), "INTRODUCING duration must remain 500 milliseconds");
+        Equal(500, introducing.GetProperty("durationMs").GetInt32(), "INTRODUCING duration must remain 500 milliseconds");
+        Equal(false, introducing.TryGetProperty("speed", out _), "INTRODUCING must use durationMs instead of speed");
+        Equal(772, introducing.GetProperty("destinationX").GetInt32(), "INTRODUCING destination X must be 772");
+        Equal(32, introducing.GetProperty("destinationY").GetInt32(), "INTRODUCING destination Y must be 32");
         Equal(0, introducing.GetProperty("flags").GetInt32(), "INTRODUCING has no start flags");
         Equal(false, introducing.GetProperty("movingAtStart").GetBoolean(), "INTRODUCING must not move at start");
     }

@@ -1655,7 +1655,11 @@ namespace Nebula.Tools.GameDumper
             int flags = ints[3];
             d["flags"] = flags;
             d["movingAtStart"] = (flags & 2) != 0;
-            d["speed"] = ints[2];
+            d["durationMs"] = ints[2];
+            if (ints.Length > 4)
+                d["destinationX"] = ints[4];
+            if (ints.Length > 5)
+                d["destinationY"] = ints[5];
             d["inAndOutType"] = ints[0];
             d["inAndOutTypeName"] = ints[0] switch
             {

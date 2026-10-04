@@ -67,7 +67,7 @@ WriteSpriteIndex(spritesDir)           // → sprites/index.json
   - `objectTypes`: 仅为兼容旧消费者保留的 `handle` → 对象类型表。MFA 会在不同帧复用 handle，因此解析实例时不可使用此全局表；应以 `frames[].objectTypes` 和实例内嵌字段为准。
     - `type`: `0=QuickBackdrop 1=Backdrop 2=Active 3=String 4=Question 5=Score 6=Lives 7=Counter 8=FormattedText 9=SubApplication ≥32=Extension`
     - `animations[]`: `{ id, name, directions[]{ index, minSpeed, maxSpeed, repeat, repeatFrame, frames[] } }`
-    - InAndOut movement `direction` is an angle in degrees (`0=Right`, `90=Top`, `180=Left`, `270=Bottom`); `inAndOutType` is `0=Linear`, `1=Smooth`. Its legacy `speed` field contains duration in milliseconds.
+    - InAndOut movement `direction` is an angle in degrees (`0=Right`, `90=Top`, `180=Left`, `270=Bottom`); `inAndOutType` is `0=Linear`, `1=Smooth`. `durationMs` stores duration in milliseconds (replacing the misleading `speed` field); `destinationX` / `destinationY` preserve the original destination coordinates, including zero for automatic positioning.
     - `followFrame`: boolean for objects with common properties (Active, String, Counter, extensions, etc.), equal to `!DontFollowFrame`; exported in both object type tables and instance metadata. Backdrops do not have this property.
     - `createAtStart`: boolean for objects with common properties, true when bit 17 (`DontCreateAtStart`, named `CreateAtStart` in the MFA loader) is clear; exported in both object type tables and instance metadata. Backdrop and QuickBackdrop do not have this property.
     - `fineDetection`: boolean for objects with common properties, equal to `!DontUseFineDetection` from `newObjectFlags`; exported in both object type tables and instance metadata. These objects do not export `collisionWithBox`.
