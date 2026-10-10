@@ -17,14 +17,21 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters
 
         public override void ReadCCN(ByteReader reader, params object[] extraInfo)
         {
+            ReadFrom(reader, 8);
+        }
+
+        internal void ReadFrom(ByteReader reader, int dataSize)
+        {
+            long pointerOrigin = reader.Tell() - 4;
             Pointer = reader.ReadInt();
-            ID = reader.ReadInt();
+            // Some MFA parameters have a two-byte ID after the four-byte pointer.
+            ID = dataSize == 6 ? reader.ReadShort() : reader.ReadInt();
 
             if (Pointer == 0)
                 CCNPointer = 0;
             else
             {
-                CCNPointer = reader.Tell() - 12 + Pointer;
+                CCNPointer = pointerOrigin + Pointer;
 
                 if (NebulaCore.Build < 284)
                     CCNPointer -= 2;

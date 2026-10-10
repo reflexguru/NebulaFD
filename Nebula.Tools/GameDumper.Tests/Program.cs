@@ -17,6 +17,10 @@ Run("backdrops export collisionWithBox instead of collisionType and exclude comm
 Run("MFA media exports remain self-contained across independent sessions", MfaResourcesAreIndependent);
 Run("tiles use frame-local MFA ink parameters with global fallback", TileExportTests.FrameLocalInk);
 Run("shared tile textures preserve opacity and collision through alternatives", TileExportTests.Alternatives);
+Run("16-bit global indices do not consume the expression header", EventParameterTests.ShortGlobalIndex);
+Run("32-bit global indices preserve their value and expression", EventParameterTests.WideGlobalIndex);
+Run("16-bit group IDs do not consume the next action", EventParameterTests.ShortGroupId);
+Run("32-bit group IDs preserve their value and pointer origin", EventParameterTests.WideGroupId);
 
 return failures.Count == 0 ? 0 : 1;
 
@@ -224,7 +228,7 @@ void InAndOutDirectionsAreExported()
             });
         }
     }
-    // Actual INTRODUCING payload:
+    // Sample movement payload:
     // type=1, direction=270, duration=500, flags=0, destination=(772, 32).
     movements.Add(new ObjectMovement
     {
@@ -261,15 +265,15 @@ void InAndOutDirectionsAreExported()
             Equal(i < cases.Length ? 3 : 1, exported[i].GetProperty("flags").GetInt32(), "flags must come from the fourth payload integer");
             Equal(i < cases.Length, exported[i].GetProperty("movingAtStart").GetBoolean(), "movingAtStart must use bit 1 independently of out-at-start");
         }
-        var introducing = exported[cases.Length * 2];
-        Equal(270, introducing.GetProperty("direction").GetInt32(), "INTRODUCING must export 270 degrees, not destination X=772");
-        Equal("Bottom", introducing.GetProperty("directionName").GetString(), "INTRODUCING direction must be Bottom");
-        Equal(500, introducing.GetProperty("durationMs").GetInt32(), "INTRODUCING duration must remain 500 milliseconds");
-        Equal(false, introducing.TryGetProperty("speed", out _), "INTRODUCING must use durationMs instead of speed");
-        Equal(772, introducing.GetProperty("destinationX").GetInt32(), "INTRODUCING destination X must be 772");
-        Equal(32, introducing.GetProperty("destinationY").GetInt32(), "INTRODUCING destination Y must be 32");
-        Equal(0, introducing.GetProperty("flags").GetInt32(), "INTRODUCING has no start flags");
-        Equal(false, introducing.GetProperty("movingAtStart").GetBoolean(), "INTRODUCING must not move at start");
+        var sampleMovement = exported[cases.Length * 2];
+        Equal(270, sampleMovement.GetProperty("direction").GetInt32(), "sample movement must export 270 degrees, not destination X=772");
+        Equal("Bottom", sampleMovement.GetProperty("directionName").GetString(), "sample movement direction must be Bottom");
+        Equal(500, sampleMovement.GetProperty("durationMs").GetInt32(), "sample movement duration must remain 500 milliseconds");
+        Equal(false, sampleMovement.TryGetProperty("speed", out _), "sample movement must use durationMs instead of speed");
+        Equal(772, sampleMovement.GetProperty("destinationX").GetInt32(), "sample movement destination X must be 772");
+        Equal(32, sampleMovement.GetProperty("destinationY").GetInt32(), "sample movement destination Y must be 32");
+        Equal(0, sampleMovement.GetProperty("flags").GetInt32(), "sample movement has no start flags");
+        Equal(false, sampleMovement.GetProperty("movingAtStart").GetBoolean(), "sample movement must not move at start");
     }
     finally
     {
@@ -300,7 +304,7 @@ void MfaResourcesAreIndependent()
         var animation = new ObjectAnimation { Name = animationName };
         animation.Directions.Add(new ObjectDirection { Frames = new uint[] { 1 } });
         common.ObjectAnimations.Animations[0] = animation;
-        var obj = new ObjectInfo { Name = "Mario", Properties = common };
+        var obj = new ObjectInfo { Name = "Test Sprite", Properties = common };
         obj.Header.Type = 2;
         mfa.FrameItems.Items[1] = obj;
         return mfa;
@@ -326,9 +330,9 @@ void MfaResourcesAreIndependent()
             VerifyManifest(dir, "images.json", "images");
             VerifyManifest(dir, "sounds.json", "sounds");
             using var index = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "sprites", "index.json")));
-            Equal("Mario", index.RootElement.GetProperty("Mario")[0].GetString(), "each MFA must have its own sprite index");
+            Equal("Test Sprite", index.RootElement.GetProperty("Test Sprite")[0].GetString(), "each MFA must have its own sprite index");
         }
-        string firstSheet = Path.Combine(first, "sprites", "Mario", "sheet.json");
+        string firstSheet = Path.Combine(first, "sprites", "Test Sprite", "sheet.json");
         string original = File.ReadAllText(firstSheet);
         var untouched = Directory.GetFiles(second, "*", SearchOption.AllDirectories)
             .ToDictionary(path => path, File.ReadAllBytes);

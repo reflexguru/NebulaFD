@@ -54,6 +54,12 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
             int dataSize = (int)(endPosition - reader.Tell());
             if (Data is ParameterRemark remark)
                 remark.ReadFrom(reader, dataSize);
+            else if (Code == 49 && dataSize == 2 && Data is ParameterInt globalIndex)
+                // MFA can store a global value index in either two or four bytes.
+                // Keep ParameterInt so naming and structured export use the same index type.
+                globalIndex.Value = reader.ReadShort();
+            else if (Data is ParameterGroupPointer groupPointer)
+                groupPointer.ReadFrom(reader, dataSize);
             else
                 Data.ReadCCN(reader, extraInfo);
 
