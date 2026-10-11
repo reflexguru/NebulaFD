@@ -3,6 +3,7 @@ using Nebula;
 using Nebula.Core.Data.Chunks.FrameChunks;
 using Nebula.Core.Data.Chunks.FrameChunks.Events;
 using Nebula.Core.Data.Chunks.FrameChunks.Events.Parameters;
+using Nebula.Core.Data.Chunks.ObjectChunks;
 using Nebula.Core.Data.PackageReaders;
 using Nebula.Core.FileReaders;
 using Nebula.Core.Memory;
@@ -19,6 +20,81 @@ static class EventParameterTests
     const string NextAction = "0E00020018000D00000000000000";
 
     public static void ShortGlobalIndex() => CheckGlobal(ShortGlobal, 1);
+
+    public static void VirtualPlayerObjects()
+    {
+        CheckVirtualPlayerObjects(mfaMode: true);
+        CheckVirtualPlayerObjects(mfaMode: false);
+    }
+
+    static void CheckVirtualPlayerObjects(bool mfaMode)
+    {
+        var frame = new Frame { FrameName = "Test Frame", Handle = 1 };
+        frame.FrameEvents.Parent = frame;
+        var evt = new Event { Parent = frame.FrameEvents };
+        for (ushort index = 0; index < 4; index++)
+        {
+            int handle = mfaMode ? 100 + index : index;
+            var obj = new ObjectInfo { Name = $"Test Sprite {index}" };
+            obj.Header.Handle = handle;
+            obj.Header.Type = 2;
+            frame.FrameObjectItems[handle] = obj;
+            frame.FrameEvents.EventObjects[index] = new EventObject
+            {
+                Handle = index, ObjectType = 1, ItemType = 2, ItemHandle = (uint)handle,
+            };
+            evt.Actions.Add(new FusionAction { Parent = evt, ObjectType = -7, ObjectInfo = index, Num = 2 });
+            evt.Conditions.Add(new Condition { Parent = evt, ObjectType = -7, ObjectInfo = index, Num = -5 });
+        }
+        // A real object with the same index must still resolve through the event table.
+        evt.Actions.Add(new FusionAction { Parent = evt, ObjectType = 2, ObjectInfo = 0, Num = 24 });
+        var mfa = new MFAPackageData();
+        mfa.Frames.Add(frame);
+        frame.FrameEvents.Events.Add(evt);
+        var oldReader = NebulaCore.CurrentReader;
+        bool oldMfa = NebulaCore.MFA;
+        string root = Path.Combine(Path.GetTempPath(), "nebula-gamedumper-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            NebulaCore.CurrentReader = new MFAFileReader { Package = mfa };
+            NebulaCore.MFA = mfaMode;
+            MFSPLExporter.Export(mfa, root);
+            using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "events.json")));
+            var exported = doc.RootElement.GetProperty("frames")[0].GetProperty("events")[0];
+            foreach (string kind in new[] { "actions", "conditions" })
+            {
+                var entries = exported.GetProperty(kind);
+                for (int index = 0; index < 4; index++)
+                {
+                    var entry = entries[index];
+                    Equal($"Player {index + 1}", entry.GetProperty("object").GetString(), $"player {kind} object name");
+                    Equal(index, entry.GetProperty("objectInfo").GetInt32(), "player index");
+                    Equal(false, entry.TryGetProperty("itemHandle", out _), "virtual players have no frame item handle");
+                    Equal(false, entry.TryGetProperty("error", out _), "player event text");
+                    string expectedText = kind == "actions"
+                        ? $"Player {index + 1} : Ignore Control"
+                        : $"Number of lives of Player {index + 1} reaches 0";
+                    Equal(expectedText, entry.GetProperty("text").GetString(), "player event description");
+                }
+            }
+            var real = exported.GetProperty("actions")[4];
+            Equal("Test Sprite 0", real.GetProperty("object").GetString(), "real object name");
+            if (mfaMode)
+                Equal(100, real.GetProperty("itemHandle").GetInt32(), "real object item handle");
+        }
+        finally
+        {
+            NebulaCore.CurrentReader = oldReader;
+            NebulaCore.MFA = oldMfa;
+            if (Directory.Exists(root))
+            {
+                File.Delete(Path.Combine(root, "objects.json"));
+                File.Delete(Path.Combine(root, "events.json"));
+                Directory.Delete(root);
+            }
+        }
+    }
+
     public static void WideGlobalIndex()
     {
         CheckGlobal(WideGlobal, 2);

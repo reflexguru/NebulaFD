@@ -397,9 +397,13 @@ namespace Nebula.Core.Data.Chunks.FrameChunks
 
         public string ResolveObjectName(int objectInfo, short aceObjectType)
         {
+            // Player ObjectInfo is a zero-based player index, not a frame object reference.
+            if (aceObjectType == -7)
+                return $"Player {objectInfo + 1}";
+
             EnsureMfaQualifiers();
 
-            if (aceObjectType < 0 && aceObjectType != -7)
+            if (aceObjectType < 0)
             {
                 return aceObjectType switch
                 {

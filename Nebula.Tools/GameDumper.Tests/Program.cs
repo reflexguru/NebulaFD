@@ -21,6 +21,8 @@ Run("16-bit global indices do not consume the expression header", EventParameter
 Run("32-bit global indices preserve their value and expression", EventParameterTests.WideGlobalIndex);
 Run("16-bit group IDs do not consume the next action", EventParameterTests.ShortGroupId);
 Run("32-bit group IDs preserve their value and pointer origin", EventParameterTests.WideGroupId);
+Run("virtual player events use player names instead of colliding frame objects", EventParameterTests.VirtualPlayerObjects);
+Run("Window Control ACE exports preserve parameters, expression tokens and unknown-ID fallback", WindowControlTests.ExportAce);
 
 return failures.Count == 0 ? 0 : 1;
 

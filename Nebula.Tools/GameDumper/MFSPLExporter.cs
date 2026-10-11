@@ -1348,7 +1348,7 @@ namespace Nebula.Tools.GameDumper
         {
             if (!NebulaCore.MFA)
                 return;
-            if (ace.ObjectType < 0 && ace.ObjectType != -7)
+            if (ace.ObjectType < 0)
                 return;
             FrameEvents? fe = ace.Parent?.Parent;
             if (fe == null || fe.EventObjects.Count == 0)
