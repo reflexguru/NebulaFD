@@ -698,6 +698,49 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                 return false;
             switch (Stem(GetExtensionFileName(ObjectType)).ToLowerInvariant())
             {
+                case "kcwctrl":
+                    string action = Num switch
+                    {
+                        80 => "Set horizontal position to " + AceParam(0),
+                        81 => "Set vertical position to " + AceParam(0),
+                        82 => "Set position n°" + AceParam(0),
+                        83 => "Set horizontal size to " + AceParam(0),
+                        84 => "Set vertical size to " + AceParam(0),
+                        85 => "Bring window to top",
+                        86 => "Bring window to bottom",
+                        87 => "Set window topmost",
+                        88 => "Set window non topmost",
+                        89 => "Show window",
+                        90 => "Hide window",
+                        91 => "Set window minimized",
+                        92 => "Set window maximized",
+                        93 => "Set window normal",
+                        94 => "Exit windows",
+                        95 => "Restart windows",
+                        96 => "Reboot system",
+                        97 => $"Move to ({AceParam(0)}, {AceParam(1)})",
+                        98 => "Set title to " + AceParam(0),
+                        99 => "Save Focus",
+                        100 => "Restore Focus",
+                        101 => "Set Focus",
+                        102 => "Flash window in taskbar",
+                        103 => "Set Background Color to " + AceParam(0),
+                        104 => "Attach window to desktop",
+                        105 => "Detach window from desktop",
+                        106 => "Set X Position of Frame window to " + AceParam(0),
+                        107 => "Set Y Position of Frame window to " + AceParam(0),
+                        108 => $"Set width of Frame window to {AceParam(0)}, adjust frame size = {AceParam(1)}",
+                        109 => $"Set height of Frame window to {AceParam(0)}, adjust frame size = {AceParam(1)}",
+                        110 => "Set minimum width to " + AceParam(0),
+                        111 => "Set minimum height to " + AceParam(0),
+                        112 => "Set maximum width to " + AceParam(0),
+                        113 => "Set maximum height to " + AceParam(0),
+                        _ => string.Empty,
+                    };
+                    if (action.Length == 0)
+                        return false;
+                    text = header + action;
+                    return true;
                 case "timex":
                     switch (Num)
                     {
@@ -765,6 +808,21 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
             string obj = GetObjectName();
             switch (Stem(GetExtensionFileName(ObjectType)).ToLowerInvariant())
             {
+                case "kcwctrl":
+                    string condition = Num switch
+                    {
+                        -81 => "Window is minimized",
+                        -82 => "Window is maximized",
+                        -83 => "Window is visible",
+                        -84 => "Application is active",
+                        -85 => "Window has focus",
+                        -86 => "Window is attached to desktop",
+                        _ => string.Empty,
+                    };
+                    if (condition.Length == 0)
+                        return false;
+                    text = $"{obj}: {condition}";
+                    return true;
                 case "timex":
                     switch (Num)
                     {
@@ -813,6 +871,30 @@ namespace Nebula.Core.Data.Chunks.FrameChunks.Events
                 return false;
             switch (Stem(GetExtensionFileName(objectType)).ToLowerInvariant())
             {
+                case "kcwctrl":
+                    string expression = num switch
+                    {
+                        80 => "WinXPos",
+                        81 => "WinYPos",
+                        82 => "WinXSize",
+                        83 => "WinYSize",
+                        84 => "ScreenXSize",
+                        85 => "ScreenYSize",
+                        86 => "ScreenDepth",
+                        87 => "ClientWidth",
+                        88 => "ClientHeight",
+                        89 => "WindowTitle$",
+                        90 => "WinBackColor",
+                        91 => "FrameWinXPos",
+                        92 => "FrameWinYPos",
+                        93 => "FrameWinXSize",
+                        94 => "FrameWinYSize",
+                        _ => string.Empty,
+                    };
+                    if (expression.Length == 0)
+                        return false;
+                    text = $"{expression}(\"{objectName}\")";
+                    return true;
                 case "foreach":
                     switch (num)
                     {
