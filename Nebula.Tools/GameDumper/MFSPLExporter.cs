@@ -1655,6 +1655,7 @@ namespace Nebula.Tools.GameDumper
             int flags = ints[3];
             d["flags"] = flags;
             d["movingAtStart"] = (flags & 2) != 0;
+            d["outAtStart"] = (flags & 1) != 0;
             d["durationMs"] = ints[2];
             if (ints.Length > 4)
                 d["destinationX"] = ints[4];

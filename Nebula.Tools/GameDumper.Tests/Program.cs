@@ -266,6 +266,7 @@ void InAndOutDirectionsAreExported()
             Equal(i < cases.Length ? -200 : 0, exported[i].GetProperty("destinationY").GetInt32(), "destination Y must preserve negative values and zero");
             Equal(i < cases.Length ? 3 : 1, exported[i].GetProperty("flags").GetInt32(), "flags must come from the fourth payload integer");
             Equal(i < cases.Length, exported[i].GetProperty("movingAtStart").GetBoolean(), "movingAtStart must use bit 1 independently of out-at-start");
+            Equal(true, exported[i].GetProperty("outAtStart").GetBoolean(), "outAtStart must use bit 0 independently of moving-at-start");
         }
         var sampleMovement = exported[cases.Length * 2];
         Equal(270, sampleMovement.GetProperty("direction").GetInt32(), "sample movement must export 270 degrees, not destination X=772");
@@ -276,6 +277,7 @@ void InAndOutDirectionsAreExported()
         Equal(32, sampleMovement.GetProperty("destinationY").GetInt32(), "sample movement destination Y must be 32");
         Equal(0, sampleMovement.GetProperty("flags").GetInt32(), "sample movement has no start flags");
         Equal(false, sampleMovement.GetProperty("movingAtStart").GetBoolean(), "sample movement must not move at start");
+        Equal(false, sampleMovement.GetProperty("outAtStart").GetBoolean(), "sample movement must not start outside");
     }
     finally
     {
